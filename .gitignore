@@ -9,3 +9,5 @@ research/grok3/dl.grok3
 *.gguf
 research/deepseekr1/*.gguf
 research/grok3/*.gguf
+research/gemini-flash-2.5/*.gguf
+research/gemini-flash-2.5/dl.gemini-flash-2.5
