@@ -1,0 +1,2 @@
+partial working code
+all progress bars on same line
