@@ -6,3 +6,6 @@ rust/target/
 rust/Cargo.lock
 research/grok3/dl.grok3
 .DS_Store
+*.gguf
+research/deepseekr1/*.gguf
+research/grok3/*.gguf
