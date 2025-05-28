@@ -1,0 +1,7 @@
+main
+dl
+downloads/
+bin/
+rust/target/
+rust/Cargo.lock
+.DS_Store
