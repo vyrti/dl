@@ -5,7 +5,9 @@ Please be aware of potential legal risks associated with using AI-generated code
 
 # DL
 
-DL is a command-line tool written in Go and Rust for downloading multiple files concurrently from a list of URLs or a Hugging Face repository. Both versions aim to feature a dynamic progress bar display for each download, showing speed, percentage, and downloaded/total size.
+DL is a command-line tool written in Go for downloading multiple files concurrently from a list of URLs or a Hugging Face repository. Features a dynamic progress bar display for each download, showing speed, percentage, and downloaded/total size.
+
+![Screenshot of DL tool](image.png)
 
 ### Features
 
