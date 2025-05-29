@@ -40,7 +40,7 @@ This is a separate implementation of the downloader tool written in Rust.
 *   `<path_to_urls_file>`: (Required) The path to the text file containing the URLs to download.
 
 ## Research
-Main working application using GO lang in this repo was created using base code from Claude Sonnet 4 with Gemini 2.5 Pro review. Two models was working on same code, one after another. Result in this repo is 2 prompts total. One prompt for each model.
+Main working application using GO lang in this repo was created using base code from Claude Sonnet 4 with Gemini 2.5 Pro review. Two models was working on same code, one after another.
 
 Rust version was also created by Claude Sonnet 4 with Gemini 2.5 Pro review with 5 promts.
 
@@ -56,7 +56,7 @@ The `research/` folder contains experimental or alternative implementations and 
 *   `deepseekr1-0528/`:
     *   no working code after 8 (!) additional prompts
 *   `gemini-2.5-pro/`:
-    *   working code after 4 prompts, more functions than in main app in this repo
+    *   working code after 4 prompts
 *   `gemini-flash-2.5/`:
     *   no working code after 5 correcting promts
     *   only model that gave 10 diff code options
