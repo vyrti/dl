@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	// "mime" // Not used in your current ProgressManager version
 )
 
 const (
@@ -189,9 +188,7 @@ func (pw *ProgressWriter) getProgressString() string {
 		}
 
 		barContent := strings.Repeat("=", filledWidth)
-		if filledWidth < progressBarWidth && filledWidth >= 0 && percentage < 100 { // Ensure filledWidth is not negative
-			// Add '>' if not full and some progress made or bar is empty
-			// Check if barContent is empty or not before trying to slice
+		if filledWidth < progressBarWidth && filledWidth >= 0 && percentage < 100 {
 			if filledWidth > 0 {
 				barContent = barContent[:len(barContent)-1] + ">"
 			} else if percentage > 0 { // Only show '>' if there's some percentage, even if filledWidth is 0
@@ -258,13 +255,11 @@ func calculateETA(speedBps float64, totalSize int64, currentSize int64) string {
 }
 
 type ProgressManager struct {
-	bars []*ProgressWriter
-	mu   sync.Mutex
-	// linesPrinted  int // No longer needed for cursor math with full screen clear
+	bars          []*ProgressWriter
+	mu            sync.Mutex
 	redrawPending bool
 	stopRedraw    chan struct{}
 	wg            sync.WaitGroup
-	// firstDrawDone bool // No longer needed
 }
 
 func NewProgressManager() *ProgressManager {
@@ -302,13 +297,9 @@ func (m *ProgressManager) redrawLoop() {
 	stdoutMutex.Unlock()
 
 	defer func() {
-		// On stop, perform a final draw, then show cursor.
-		// The "All tasks processed" message will print after this.
 		m.performActualDraw(true)
 		stdoutMutex.Lock()
-		fmt.Print("\033[?25h") // Show cursor
-		// A final newline is good practice if the last line of performActualDraw doesn't guarantee one
-		// or if we want to ensure separation from the shell prompt.
+		fmt.Print("\033[?25h")
 		fmt.Println()
 		stdoutMutex.Unlock()
 	}()
@@ -435,7 +426,6 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 	)
 }
 
-// performActualDraw - SIMPLIFIED - Replicating Gemini's display logic
 func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 	m.mu.Lock() // Lock for consistent snapshot of bars
 	barsSnapshot := make([]*ProgressWriter, len(m.bars))
@@ -457,26 +447,18 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 	}
 	m.mu.Unlock()
 
-	// Use the global stdoutMutex for all terminal output operations
 	stdoutMutex.Lock()
 	defer stdoutMutex.Unlock()
 
-	// 1. Clear screen and move to home position
 	fmt.Print("\033[H\033[2J")
 
-	// 2. Print a static header (optional, but good for structure)
-	// This will be redrawn every time.
-	// The initial "Attempting to download..." in main() will be cleared by the first run of this.
 	fmt.Println("Download Progress:")
-	fmt.Println(strings.Repeat("-", 80)) // Adjust width as needed
+	fmt.Println(strings.Repeat("-", 80))
 
-	// 3. Print each individual progress bar
 	for _, bar := range barsSnapshot {
-		// getProgressString already handles locking for its internal data
 		fmt.Println(bar.getProgressString()) // fmt.Println adds a newline
 	}
 
-	// 4. Print the overall progress line, if there are any bars
 	if len(barsSnapshot) > 0 {
 		fmt.Println(strings.Repeat("-", 80))                  // Separator before overall
 		fmt.Println(m.getOverallProgressString(barsSnapshot)) // fmt.Println adds a newline
@@ -623,11 +605,8 @@ func main() {
 
 	manager := NewProgressManager()
 
-	// This initial message will be cleared by the first performActualDraw
 	fmt.Printf("Attempting to download %d files from '%s' into '%s' (concurrency: %d)...\n",
 		len(urls), urlsFilePath, downloadDir, concurrency)
-	// A small sleep can help ensure this message is seen before the first clear,
-	// but ideally, the progress manager itself would handle any static headers.
 	time.Sleep(100 * time.Millisecond)
 
 	var downloadWG sync.WaitGroup
@@ -645,6 +624,5 @@ func main() {
 	downloadWG.Wait()
 	manager.Stop() // This will call performActualDraw(true) for the final state
 
-	// This message will print after the progress UI is completely done.
 	fmt.Printf("All %d download tasks have been processed.\n", len(urls))
 }
