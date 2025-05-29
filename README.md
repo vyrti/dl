@@ -7,6 +7,7 @@ Please be aware of potential legal risks associated with using AI-generated code
 # DL
 
 DL is a command-line tool written in Go for downloading multiple files concurrently from a list of URLs or a Hugging Face repository. It features a dynamic progress bar display for each download, showing speed, percentage, and downloaded/total size. The tool supports advanced Hugging Face repository handling, including interactive selection of specific `.gguf` files or series.
+Auto-update is available with -update.
 
 ![Screenshot of DL tool](image.png)
 
@@ -61,6 +62,7 @@ DL is a command-line tool written in Go for downloading multiple files concurren
 *   `-hf <repo_input>`: (Required if `-f` is not used) The Hugging Face repository ID (e.g., `owner/repo_name`) or a full `https://huggingface.co/owner/repo_name` URL. Downloads all files from the main branch of the specified repository.
 *   `-select`: (Optional, Hugging Face only) If the repository contains mostly `.gguf` files, allows you to interactively select a specific GGUF file or series to download.
 *   `-debug`: (Optional) Enables debug logging to `log.log`.
+*   `-update`: (Optional) Updates to latest version.
 
 ---
 
