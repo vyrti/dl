@@ -1,5 +1,6 @@
 main
 dl
+build/
 downloads/
 .DS_Store
 *.gguf

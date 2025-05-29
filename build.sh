@@ -1,76 +1,49 @@
-#/bin/bash
-
-# This script builds the Rust project for multiple target platforms.
+// build.sh
+#!/bin/bash
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Define target platforms
-TARGETS=(
-    "x86_64-apple-darwin"    # macOS Intel
-    "aarch64-apple-darwin"   # macOS Apple Silicon
-    "x86_64-pc-windows-gnu"  # Windows (using GNU toolchain)
-    "x86_64-unknown-linux-gnu" # Linux x86_64
-    "aarch64-unknown-linux-gnu" # Linux ARM64
-    "x86_64-unknown-freebsd" # FreeBSD x86_64
-    "aarch64-unknown-freebsd" # FreeBSD ARM64
-)
+# Define the source directory
+SOURCE_DIR="./go.stable"
 
-# Directory containing the Rust project
-RUST_DIR="./rust"
+# Define the output directory
+OUTPUT_DIR="./build"
 
-# Check if the Rust directory exists
-if [ ! -d "$RUST_DIR" ]; then
-    echo "Error: Rust project directory '$RUST_DIR' not found."
-    exit 1
-fi
+# Create the output directory if it doesn't exist
+mkdir -p "$OUTPUT_DIR"
 
-# Navigate to the Rust project directory
-cd "$RUST_DIR"
+echo "Starting build process..."
 
-# Remove the target directory before building
-echo "Cleaning previous build artifacts..."
-rm -rf "rust/target"
+# macOS Builds
+echo "Building for macOS Intel (amd64)..."
+GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o "$OUTPUT_DIR/dl.intel.mac" "$SOURCE_DIR"
+echo "Output: $OUTPUT_DIR/dl.intel.mac"
 
-echo "Building Rust project for multiple targets..."
+echo "Building for macOS M1 (arm64)..."
+GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o "$OUTPUT_DIR/dl.arm.mac" "$SOURCE_DIR"
+echo "Output: $OUTPUT_DIR/dl.arm.mac"
 
-# Loop through each target and build
-for TARGET in "${TARGETS[@]}"; do
-    echo ""
-    echo "----------------------------------------"
-    echo "Building for target: $TARGET"
-    echo "----------------------------------------"
+# Windows Builds
+echo "Building for Windows x86 (amd64)..."
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "$OUTPUT_DIR/dl.x64.exe" "$SOURCE_DIR"
+echo "Output: $OUTPUT_DIR/dl.x64.exe"
 
-    # Check if the target toolchain is installed, install if not.
-    # Note: This check is basic. A more robust script might parse `rustup target list`.
-    if ! rustup target list | grep -q "$TARGET"; then
-        echo "Toolchain for $TARGET not found. Attempting to install..."
-        rustup target add "$TARGET"
-        if [ $? -ne 0 ]; then
-            echo "Error installing toolchain for $TARGET. Please install it manually using 'rustup target add $TARGET'."
-            # Continue to the next target instead of exiting, as some targets might succeed.
-            continue
-        fi
-    fi
+echo "Building for Windows ARM (arm64)..."
+GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o "$OUTPUT_DIR/dl.arm.exe" "$SOURCE_DIR"
+echo "Output: $OUTPUT_DIR/dl.arm.exe"
 
-    # Build the project for the target in release mode
-    cargo build --release --target "$TARGET"
+# Linux Builds
+echo "Building for Linux x86 (amd64)..."
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "$OUTPUT_DIR/dl.x64" "$SOURCE_DIR"
+echo "Output: $OUTPUT_DIR/dl.x64"
 
-    if [ $? -ne 0 ]; then
-        echo "Error building for target $TARGET."
-        # Continue to the next target instead of exiting.
-        continue
-    fi
+echo "Building for Linux ARM (arm64)..."
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o "$OUTPUT_DIR/dl.arm" "$SOURCE_DIR"
+echo "Output: $OUTPUT_DIR/dl.arm"
 
-    echo "Successfully built for target: $TARGET"
-done
+echo "Build process completed."
+echo "Binaries are located in the '$OUTPUT_DIR' directory."
 
-echo ""
-echo "----------------------------------------"
-echo "Build process finished."
-echo "Executables can be found in rust/target/<target>/release/"
-echo "----------------------------------------"
-
-cp rust/target/aarch64-apple-darwin/release/dl /rust/release/dl-mac-arm
-cp rust/target/x86_64-apple-darwin/release/dl /rust/release/dl-mac-intel
-cp rust/target/x86_64-pc-windows-gnu/release/dl.exe /rust/release/dl.exe
+# List the contents of the build directory
+ls -l "$OUTPUT_DIR"
