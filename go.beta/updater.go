@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings" // For string manipulation
 	"time"
+
+	"golang.org/x/mod/semver" // For semantic version comparison
 )
 
 const (
@@ -16,9 +19,11 @@ const (
 	updaterRepoName  = "dl"
 	// CurrentAppVersion can be set at build time using ldflags:
 	// go build -ldflags="-X main.CurrentAppVersion=v0.1.0"
+	// or for development builds:
+	// go build -ldflags="-X main.CurrentAppVersion=DEVELOPMENT"
 	// This allows checking if an update is actually newer.
-	// For this implementation, we'll assume an update is always performed if --update is called.
-	CurrentAppVersion = "v0.1.0" // Default if not set by ldflags
+	CurrentAppVersion  = "v0.1.1"      // Default if not set by ldflags
+	DevelopmentVersion = "DEVELOPMENT" // Special string to indicate a development build
 )
 
 // GHAssetUpdater represents an asset in a GitHub release for the updater.
@@ -35,14 +40,20 @@ type GHReleaseUpdater struct {
 	Assets  []GHAssetUpdater `json:"assets"`
 }
 
+// appLogger is expected to be a global logger instance defined elsewhere in the 'main' package
+// (e.g., in main.go or downloader.go).
+// Example:
+// var appLogger *log.Logger
+
 func platformArchToAssetName(goos, goarch string) (string, error) {
+	// ...
 	switch goos {
 	case "linux":
 		switch goarch {
 		case "amd64":
 			return "dl.x64", nil
 		case "arm64":
-			return "dl.arm", nil // Assuming dl.arm is for arm64
+			return "dl.arm", nil
 		}
 	case "windows":
 		switch goarch {
@@ -63,6 +74,7 @@ func platformArchToAssetName(goos, goarch string) (string, error) {
 }
 
 func fetchLatestUpdateRelease(owner, repo string) (*GHReleaseUpdater, error) {
+	// ...
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
 	appLogger.Printf("[Updater] Fetching latest release info from: %s", apiURL)
 
@@ -71,7 +83,7 @@ func fetchLatestUpdateRelease(owner, repo string) (*GHReleaseUpdater, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request for GitHub API: %w", err)
 	}
-	req.Header.Set("User-Agent", "Go-Downloader-Updater/1.0") // It's good practice to set a User-Agent
+	req.Header.Set("User-Agent", "Go-Downloader-Updater/1.0")
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := client.Do(req)
@@ -92,7 +104,8 @@ func fetchLatestUpdateRelease(owner, repo string) (*GHReleaseUpdater, error) {
 }
 
 func findMatchingAssetForUpdate(release *GHReleaseUpdater, targetAssetName string) *GHAssetUpdater {
-	for i := range release.Assets { // Iterate by index to get a pointer to the element
+	// ...
+	for i := range release.Assets {
 		if release.Assets[i].Name == targetAssetName {
 			asset := &release.Assets[i]
 			appLogger.Printf("[Updater] Found matching asset: %s (Size: %d)", asset.Name, asset.Size)
@@ -104,6 +117,7 @@ func findMatchingAssetForUpdate(release *GHReleaseUpdater, targetAssetName strin
 }
 
 func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
+	// ...
 	appLogger.Printf("[Updater] Downloading update from %s to %s", url, destPath)
 	fmt.Fprintf(os.Stderr, "[INFO] Downloading update from %s...\n", url)
 
@@ -113,7 +127,7 @@ func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
 	}
 	defer out.Close()
 
-	client := http.Client{Timeout: 30 * time.Minute} // Generous timeout for large downloads
+	client := http.Client{Timeout: 30 * time.Minute}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request for download: %w", err)
@@ -131,7 +145,7 @@ func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
 	}
 
 	totalSize := resp.ContentLength
-	if totalSize <= 0 && assetSize > 0 { // Fallback to asset.Size if ContentLength is not helpful
+	if totalSize <= 0 && assetSize > 0 {
 		totalSize = assetSize
 	}
 	if totalSize <= 0 {
@@ -139,7 +153,7 @@ func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
 	}
 
 	var downloaded int64
-	buf := make([]byte, 32*1024) // 32KB buffer
+	buf := make([]byte, 32*1024)
 	startTime := time.Now()
 
 	for {
@@ -160,30 +174,26 @@ func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
 				percent := float64(downloaded) * 100 / float64(totalSize)
 				fmt.Fprintf(os.Stderr, "\rDownloading update: %.2f%% ", percent)
 			} else {
-				// If total size is unknown, show bytes downloaded
 				fmt.Fprintf(os.Stderr, "\rDownloading update: %.2f MB ", float64(downloaded)/(1024*1024))
 			}
 		}
 		if er != nil {
-			if er != io.EOF { // io.EOF is expected at the end
+			if er != io.EOF {
 				err = er
 			}
 			break
 		}
 	}
-	fmt.Fprintln(os.Stderr) // Newline after progress updates are done
+	fmt.Fprintln(os.Stderr)
 
 	if err != nil {
-		os.Remove(destPath) // Attempt to clean up partially downloaded file
+		os.Remove(destPath)
 		return fmt.Errorf("error during download stream: %w", err)
 	}
 
 	appLogger.Printf("[Updater] Downloaded %d bytes in %s", downloaded, time.Since(startTime))
 	if totalSize > 0 && downloaded != totalSize {
 		appLogger.Printf("[Updater] Warning: Downloaded size (%d) does not match expected size (%d). File may be incomplete or corrupted.", downloaded, totalSize)
-		// Consider this an error if strict size matching is required.
-		// For now, it's a warning, and the update continues.
-		// return fmt.Errorf("downloaded size mismatch: %d vs %d, download may be corrupt", downloaded, totalSize)
 	}
 	return nil
 }
@@ -217,14 +227,54 @@ func HandleUpdate() {
 		os.Exit(1)
 	}
 	appLogger.Printf("[Updater] Latest release found: %s (Tag: %s)", release.Name, release.TagName)
+	appLogger.Printf("[Updater] Current app version: %s", CurrentAppVersion)
 
-	// Optional: Version check (if CurrentAppVersion is set via ldflags)
-	// if release.TagName == CurrentAppVersion && CurrentAppVersion != "DEVELOPMENT" {
-	// 	appLogger.Printf("[Updater] Current version %s is already the latest version %s.", CurrentAppVersion, release.TagName)
-	// 	fmt.Fprintf(os.Stderr, "[INFO] You are already running the latest version (%s).\n", CurrentAppVersion)
-	// 	os.Exit(0)
-	// }
-	// fmt.Fprintf(os.Stderr, "[INFO] Latest version available: %s. Your version: %s.\n", release.TagName, CurrentAppVersion)
+	// Version Check
+	if CurrentAppVersion == DevelopmentVersion {
+		appLogger.Printf("[Updater] Running development version (%s). Proceeding with update check for release %s.", DevelopmentVersion, release.TagName)
+		fmt.Fprintf(os.Stderr, "[INFO] Running development version. Checking for release %s...\n", release.TagName)
+	} else {
+		// Normalize CurrentAppVersion for comparison (e.g., ensure 'v' prefix if it's like "1.2.3")
+		currentVersionToCompare := CurrentAppVersion
+		if !strings.HasPrefix(currentVersionToCompare, "v") && semver.IsValid("v"+currentVersionToCompare) {
+			currentVersionToCompare = "v" + currentVersionToCompare
+		}
+
+		if !semver.IsValid(currentVersionToCompare) {
+			appLogger.Printf("[Updater] Warning: Current app version string '%s' (normalized to '%s') is not a valid semantic version. Proceeding with update, but version comparison is unreliable.", CurrentAppVersion, currentVersionToCompare)
+			fmt.Fprintf(os.Stderr, "[WARN] Your current application version (%s) is not standard. Attempting update from %s...\n", CurrentAppVersion, release.TagName)
+		} else {
+			// CurrentAppVersion is valid semver. Now check and normalize release.TagName.
+			releaseVersionToCompare := release.TagName
+			if !strings.HasPrefix(releaseVersionToCompare, "v") && semver.IsValid("v"+releaseVersionToCompare) {
+				releaseVersionToCompare = "v" + releaseVersionToCompare
+			}
+
+			if !semver.IsValid(releaseVersionToCompare) {
+				appLogger.Printf("[Updater] Error: Latest release tag '%s' (normalized to '%s') is not a valid semantic version. Cannot compare versions. Aborting update.", release.TagName, releaseVersionToCompare)
+				fmt.Fprintf(os.Stderr, "[ERROR] The latest release tag (%s) is not a recognized version. Cannot perform update.\n", release.TagName)
+				os.Exit(1) // Abort if the remote tag is not understandable.
+			}
+
+			// Both versions are valid semver. Compare them.
+			comparisonResult := semver.Compare(releaseVersionToCompare, currentVersionToCompare)
+
+			if comparisonResult > 0 {
+				// New version is available
+				appLogger.Printf("[Updater] New version %s is available (current: %s).", releaseVersionToCompare, currentVersionToCompare)
+				fmt.Fprintf(os.Stderr, "[INFO] A new version %s is available. (Your current version: %s)\n", release.TagName, CurrentAppVersion)
+			} else {
+				// Current version is the same or newer
+				message := "is the same as"
+				if comparisonResult < 0 {
+					message = "is newer than"
+				}
+				appLogger.Printf("[Updater] Current version %s %s the latest release version %s. No update needed.", currentVersionToCompare, message, releaseVersionToCompare)
+				fmt.Fprintf(os.Stderr, "[INFO] Your current version (%s) %s the latest available version (%s). No update needed.\n", CurrentAppVersion, message, release.TagName)
+				os.Exit(0)
+			}
+		}
+	}
 
 	asset := findMatchingAssetForUpdate(release, targetAssetName)
 	if asset == nil {
@@ -236,8 +286,7 @@ func HandleUpdate() {
 	fmt.Fprintf(os.Stderr, "[INFO] Found update: %s (Version: %s, Size: %.2f MB)\n", asset.Name, release.TagName, float64(asset.Size)/(1024*1024))
 
 	tempDownloadPath := currentExecPath + ".new"
-	// Clean up any old temp file first
-	os.Remove(tempDownloadPath)
+	os.Remove(tempDownloadPath) // Clean up any old temp file
 
 	if err := downloadFileForUpdate(asset.BrowserDownloadURL, tempDownloadPath, asset.Size); err != nil {
 		appLogger.Printf("[Updater] Failed to download update: %v", err)
@@ -246,13 +295,10 @@ func HandleUpdate() {
 		os.Exit(1)
 	}
 
-	// Ensure the downloaded file is executable (especially for Unix-like systems)
-	// On Windows, Chmod is mostly a no-op for executability but doesn't hurt.
 	if err := os.Chmod(tempDownloadPath, 0755); err != nil {
 		appLogger.Printf("[Updater] Warning: Failed to set executable permission on %s: %v", tempDownloadPath, err)
-		// This is more critical for Linux/macOS than Windows.
 		if runtime.GOOS != "windows" {
-			fmt.Fprintf(os.Stderr, "[ERROR] Failed to make update executable: %v. Please check permissions for the directory containing the application.\n", err)
+			fmt.Fprintf(os.Stderr, "[ERROR] Failed to make update executable: %v. Please check permissions.\n", err)
 			os.Remove(tempDownloadPath)
 			os.Exit(1)
 		}
@@ -262,27 +308,23 @@ func HandleUpdate() {
 	fmt.Fprintln(os.Stderr, "[INFO] Applying update...")
 
 	oldExecPath := currentExecPath + ".old"
-	// Remove any pre-existing .old file to avoid issues with os.Rename
 	os.Remove(oldExecPath)
 
-	// Rename current executable to .old
 	if err := os.Rename(currentExecPath, oldExecPath); err != nil {
 		appLogger.Printf("[Updater] Failed to rename current executable %s to %s: %v", currentExecPath, oldExecPath, err)
 		fmt.Fprintf(os.Stderr, "[ERROR] Failed to backup current application: %v\n", err)
-		fmt.Fprintln(os.Stderr, "         Please ensure the application has write permissions to its directory, and that it's not locked by another process.")
-		os.Remove(tempDownloadPath) // Clean up downloaded file
+		fmt.Fprintln(os.Stderr, "         Please ensure the application has write permissions to its directory, and that it's not locked.")
+		os.Remove(tempDownloadPath)
 		os.Exit(1)
 	}
 	appLogger.Printf("[Updater] Renamed %s to %s", currentExecPath, oldExecPath)
 
-	// Rename new executable to current executable's path
 	if err := os.Rename(tempDownloadPath, currentExecPath); err != nil {
 		appLogger.Printf("[Updater] Failed to rename new executable %s to %s: %v", tempDownloadPath, currentExecPath, err)
 		fmt.Fprintf(os.Stderr, "[ERROR] Failed to apply update: %v\n", err)
-		// Attempt to restore backup
 		if errRestore := os.Rename(oldExecPath, currentExecPath); errRestore != nil {
 			appLogger.Printf("[Updater] CRITICAL: Failed to restore backup %s to %s: %v", oldExecPath, currentExecPath, errRestore)
-			fmt.Fprintf(os.Stderr, "[CRITICAL] Failed to restore backup. Application may be in an inconsistent state. The old version might be at: %s\n", oldExecPath)
+			fmt.Fprintf(os.Stderr, "[CRITICAL] Failed to restore backup. Application may be in an inconsistent state. Old version at: %s\n", oldExecPath)
 		} else {
 			appLogger.Printf("[Updater] Restored backup %s to %s", oldExecPath, currentExecPath)
 			fmt.Fprintln(os.Stderr, "[INFO] Backup restored. Update failed.")
