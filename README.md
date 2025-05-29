@@ -64,28 +64,6 @@ DL is a command-line tool written in Go for downloading multiple files concurren
 
 ---
 
-## Example Usage
-
-Download all files from a Hugging Face repo, preserving subdirectories:
-
-```bash
-./dl -hf "TheBloke/SomeModel-GGUF"
-```
-
-Download a specific GGUF series interactively:
-
-```bash
-./dl -hf "TheBloke/SomeModel-GGUF" -select
-```
-
-Download from a list of URLs:
-
-```bash
-./dl -f ../download_links.txt -c 8
-```
-
----
-
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
