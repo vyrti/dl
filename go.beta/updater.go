@@ -46,28 +46,28 @@ type GHReleaseUpdater struct {
 // var appLogger *log.Logger
 
 func platformArchToAssetName(goos, goarch string) (string, error) {
-	// ...
+	// Asset names must match those produced in build.sh
 	switch goos {
-	case "linux":
+	case "darwin":
 		switch goarch {
 		case "amd64":
-			return "dl.x64", nil
+			return "dl.apple.intel", nil
 		case "arm64":
-			return "dl.arm", nil
+			return "dl.apple.arm", nil
 		}
 	case "windows":
 		switch goarch {
 		case "amd64":
-			return "dl.x64.exe", nil
+			return "dl.win.x64.exe", nil
 		case "arm64":
-			return "dl.arm.exe", nil
+			return "dl.win.arm.exe", nil
 		}
-	case "darwin":
+	case "linux":
 		switch goarch {
 		case "amd64":
-			return "dl.intel.mac", nil
+			return "dl.linux.x64", nil
 		case "arm64":
-			return "dl.arm.mac", nil
+			return "dl.linux.arm", nil
 		}
 	}
 	return "", fmt.Errorf("unsupported platform-architecture combination for update: %s/%s", goos, goarch)
