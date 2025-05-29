@@ -7,6 +7,10 @@ rust/Cargo.lock
 research/grok3/dl.grok3
 .DS_Store
 *.gguf
+go/main
+go/main2
+go/main3
+go/main4
 research/deepseekr1/*.gguf
 research/grok3/*.gguf
 research/gemini-flash-2.5/*.gguf
