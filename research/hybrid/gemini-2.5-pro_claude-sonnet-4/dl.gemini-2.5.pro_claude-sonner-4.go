@@ -16,16 +16,19 @@ import (
 )
 
 const (
+	// Adjusted for speed display
 	maxFilenameDisplayLength = 20
 	progressBarWidth         = 25
 	redrawInterval           = 150 * time.Millisecond
-	speedUpdateInterval      = 750 * time.Millisecond
+	speedUpdateInterval      = 750 * time.Millisecond // How often to recalculate speed for a bar
 )
 
-var stdoutMutex sync.Mutex // This mutex will be used by performActualDraw
+// --- Global Variables ---
+var stdoutMutex sync.Mutex
 
+// --- Helper Function ---
 func formatSpeed(bytesPerSecond float64) string {
-	if bytesPerSecond < 0 {
+	if bytesPerSecond < 0 { // Can happen if current somehow decreases or time is weird
 		return "--- B/s"
 	}
 	if bytesPerSecond < 1024 {
@@ -39,6 +42,7 @@ func formatSpeed(bytesPerSecond float64) string {
 	return fmt.Sprintf("%6.2f MB/s", mbps)
 }
 
+// --- ProgressWriter ---
 type ProgressWriter struct {
 	id                   int
 	FileName             string
@@ -50,7 +54,7 @@ type ProgressWriter struct {
 	manager              *ProgressManager
 	lastSpeedCalcTime    time.Time
 	lastSpeedCalcCurrent int64
-	currentSpeedBps      float64
+	currentSpeedBps      float64 // Bytes per second
 }
 
 func newProgressWriter(id int, fileName string, totalSize int64, manager *ProgressManager) *ProgressWriter {
@@ -63,7 +67,7 @@ func newProgressWriter(id int, fileName string, totalSize int64, manager *Progre
 		FileName:             displayFileName,
 		Total:                totalSize,
 		manager:              manager,
-		lastSpeedCalcTime:    time.Now(),
+		lastSpeedCalcTime:    time.Now(), // Initialize for first speed calc
 		lastSpeedCalcCurrent: 0,
 	}
 }
@@ -76,6 +80,7 @@ func (pw *ProgressWriter) Write(p []byte) (int, error) {
 		return n, io.EOF
 	}
 	pw.Current += int64(n)
+	// Speed is updated by ProgressManager's redrawLoop periodically
 	pw.mu.Unlock()
 	pw.manager.requestRedraw()
 	return n, nil
@@ -86,26 +91,29 @@ func (pw *ProgressWriter) UpdateSpeed() {
 	defer pw.mu.Unlock()
 
 	if pw.IsFinished {
+		// pw.currentSpeedBps = 0 // Already handled in MarkFinished
 		return
 	}
 
 	now := time.Now()
 	elapsed := now.Sub(pw.lastSpeedCalcTime)
 
+	// Only update if enough time has passed or it's near completion (for a final accurate speed)
 	if elapsed < speedUpdateInterval && (pw.Total <= 0 || pw.Current < pw.Total) {
 		return
 	}
 
-	if elapsed.Seconds() < 0.05 {
+	if elapsed.Seconds() < 0.05 { // Avoid division by zero or extremely small intervals if called rapidly
 		return
 	}
 
 	bytesDownloadedInInterval := pw.Current - pw.lastSpeedCalcCurrent
 	if bytesDownloadedInInterval < 0 {
 		bytesDownloadedInInterval = 0
-	}
+	} // Safety
 
 	pw.currentSpeedBps = float64(bytesDownloadedInInterval) / elapsed.Seconds()
+
 	pw.lastSpeedCalcTime = now
 	pw.lastSpeedCalcCurrent = pw.Current
 }
@@ -114,7 +122,7 @@ func (pw *ProgressWriter) MarkFinished(errMsg string) {
 	pw.mu.Lock()
 	pw.IsFinished = true
 	pw.ErrorMsg = errMsg
-	pw.currentSpeedBps = 0
+	pw.currentSpeedBps = 0 // Explicitly set speed to 0 on finish
 
 	if errMsg == "" && pw.Total > 0 && pw.Current < pw.Total {
 		pw.Current = pw.Total
@@ -138,13 +146,14 @@ func (pw *ProgressWriter) getProgressString() string {
 
 	speedStr := formatSpeed(currentSpeed)
 	if isFinished && errorMsg == "" {
-		speedStr = "Done    "
+		speedStr = "Done    " // Pad to align with speed format
 	} else if isFinished && errorMsg != "" {
 		speedStr = "Error   "
 	}
 
+	// Calculate ETA if not finished
 	var etaStr string
-	if !isFinished && currentSpeed > 0 && total > 0 && current < total {
+	if !isFinished {
 		etaStr = calculateETA(currentSpeed, total, current)
 	} else {
 		etaStr = "N/A"
@@ -152,7 +161,7 @@ func (pw *ProgressWriter) getProgressString() string {
 
 	if isFinished {
 		if errorMsg != "" {
-			maxErrorDisplay := progressBarWidth + 20
+			maxErrorDisplay := progressBarWidth + 20 // Approximate
 			displayError := errorMsg
 			if len(displayError) > maxErrorDisplay {
 				displayError = displayError[:maxErrorDisplay-3] + "..."
@@ -167,50 +176,44 @@ func (pw *ProgressWriter) getProgressString() string {
 	}
 
 	percentage := 0.0
-	barFill := strings.Repeat(" ", progressBarWidth) // Use barFill for clarity
+	bar := strings.Repeat(" ", progressBarWidth)
 	indeterminate := false
 
 	if total > 0 {
 		percentage = (float64(current) / float64(total)) * 100
 		if percentage > 100 {
 			percentage = 100
-		}
+		} // Cap at 100
 		if percentage < 0 {
 			percentage = 0
-		}
+		} // Floor at 0
 
-		filledWidth := int(math.Round(float64(progressBarWidth) * percentage / 100.0))
+		filledWidth := int(float64(progressBarWidth) * percentage / 100.0)
 		if filledWidth > progressBarWidth {
 			filledWidth = progressBarWidth
 		}
-		if filledWidth < 0 {
-			filledWidth = 0
-		}
-
-		barContent := strings.Repeat("=", filledWidth)
-		if filledWidth < progressBarWidth && filledWidth >= 0 && percentage < 100 {
-			if filledWidth > 0 {
-				barContent = barContent[:len(barContent)-1] + ">"
-			} else if percentage > 0 { // Only show '>' if there's some percentage, even if filledWidth is 0
-				barContent = ">"
+		bar = strings.Repeat("=", filledWidth)
+		// Add '>' if not full and some progress made or bar is empty
+		if filledWidth < progressBarWidth && (filledWidth > 0 || percentage > 0) {
+			if filledWidth > 0 { // If bar has content, replace last char
+				bar = bar[:len(bar)-1] + ">"
+			} else { // If bar is empty but there's some percentage, just add ">"
+				bar = ">"
 			}
 		}
-		barFill = barContent + strings.Repeat(" ", progressBarWidth-len(barContent))
+		bar += strings.Repeat(" ", progressBarWidth-len(bar))
 
 	} else {
 		indeterminate = true
 		spinChars := []string{"|", "/", "-", "\\"}
-		spinner := spinChars[int(time.Now().UnixNano()/(int64(redrawInterval)/2))%len(spinChars)]
+		spinner := spinChars[int(time.Now().UnixNano()/(100*int64(time.Millisecond)))%len(spinChars)]
 		mid := progressBarWidth / 2
 		barRunes := []rune(strings.Repeat(" ", progressBarWidth))
 		if mid > 0 && mid <= len(barRunes) {
-			barRunes[max(0, mid-1)] = []rune(spinner)[0]
-		} else if len(barRunes) > 0 {
-			barRunes[0] = []rune(spinner)[0]
+			barRunes[mid-1] = []rune(spinner)[0]
 		}
-		barFill = string(barRunes)
+		bar = string(barRunes)
 	}
-	bar := "[" + barFill + "]"
 
 	currentMB := float64(current) / (1024 * 1024)
 	totalMBStr := "???.?? MB"
@@ -219,17 +222,11 @@ func (pw *ProgressWriter) getProgressString() string {
 	}
 
 	if indeterminate {
-		return fmt.Sprintf("%-*s: %s (%6.2f MB / unknown) @ %s ETA: %s",
+		return fmt.Sprintf("%-*s: [%s] (%6.2f MB / unknown) @ %s ETA: %s",
 			maxFilenameDisplayLength, fileName, bar, currentMB, speedStr, etaStr)
 	}
-	return fmt.Sprintf("%-*s: %s %6.2f%% (%6.2f MB / %s) @ %s ETA: %s",
+	return fmt.Sprintf("%-*s: [%s] %6.2f%% (%6.2f MB / %s) @ %s ETA: %s",
 		maxFilenameDisplayLength, fileName, bar, percentage, currentMB, totalMBStr, speedStr, etaStr)
-}
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func calculateETA(speedBps float64, totalSize int64, currentSize int64) string {
@@ -240,6 +237,7 @@ func calculateETA(speedBps float64, totalSize int64, currentSize int64) string {
 	remainingBytes := totalSize - int64(currentSize)
 	remainingSeconds := float64(remainingBytes) / speedBps
 
+	// Format the ETA
 	if remainingSeconds < 60 {
 		return fmt.Sprintf("%.0f sec", remainingSeconds)
 	} else if remainingSeconds < 3600 {
@@ -254,9 +252,11 @@ func calculateETA(speedBps float64, totalSize int64, currentSize int64) string {
 	}
 }
 
+// --- ProgressManager ---
 type ProgressManager struct {
 	bars          []*ProgressWriter
 	mu            sync.Mutex
+	linesPrinted  int
 	redrawPending bool
 	stopRedraw    chan struct{}
 	wg            sync.WaitGroup
@@ -297,10 +297,9 @@ func (m *ProgressManager) redrawLoop() {
 	stdoutMutex.Unlock()
 
 	defer func() {
-		m.performActualDraw(true)
+		m.performActualDraw(true) // Final draw
 		stdoutMutex.Lock()
-		fmt.Print("\033[?25h")
-		fmt.Println()
+		fmt.Print("\033[?25h") // Show cursor
 		stdoutMutex.Unlock()
 	}()
 
@@ -314,8 +313,9 @@ func (m *ProgressManager) redrawLoop() {
 		}
 
 		m.mu.Lock()
+		// Update speeds for all active bars
 		for _, bar := range m.bars {
-			bar.UpdateSpeed()
+			bar.UpdateSpeed() // This call is internally rate-limited by speedUpdateInterval
 		}
 
 		if m.redrawPending {
@@ -337,100 +337,20 @@ func (m *ProgressManager) hasIndeterminateOrActiveBarsLocked() bool {
 	for _, bar := range m.bars {
 		bar.mu.Lock()
 		isActive := !bar.IsFinished
-		isIndeterminate := isActive && bar.Total <= 0
+		isIndeterminate := isActive && bar.Total == -1
 		bar.mu.Unlock()
-		if isIndeterminate || isActive {
+		if isIndeterminate || (isActive && bar.currentSpeedBps > 0) { // Redraw if indeterminate or active with speed
 			return true
 		}
 	}
 	return false
 }
 
-func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWriter) string {
-	var totalCurrentBytes int64
-	var totalExpectedBytes int64
-	var overallSpeedBps float64
-	allFinished := true
-	totalFiles := len(barsSnapshot)
-	finishedFiles := 0
-
-	for _, bar := range barsSnapshot {
-		bar.mu.Lock()
-		totalCurrentBytes += bar.Current
-		if bar.Total > 0 {
-			totalExpectedBytes += bar.Total
-		}
-		overallSpeedBps += bar.currentSpeedBps
-		if !bar.IsFinished {
-			allFinished = false
-		} else {
-			finishedFiles++
-		}
-		bar.mu.Unlock()
-	}
-
-	percentage := 0.0
-	if totalExpectedBytes > 0 {
-		percentage = (float64(totalCurrentBytes) / float64(totalExpectedBytes)) * 100
-		if percentage > 100 {
-			percentage = 100
-		}
-	} else if allFinished && totalFiles > 0 {
-		percentage = 100.0
-	}
-
-	totalCurrentStr := fmt.Sprintf("%.2f MB", float64(totalCurrentBytes)/(1024*1024))
-	totalExpectedStr := "???.?? MB"
-	if totalExpectedBytes > 0 {
-		totalExpectedStr = fmt.Sprintf("%.2f MB", float64(totalExpectedBytes)/(1024*1024))
-	} else if allFinished && totalFiles > 0 {
-		totalExpectedStr = totalCurrentStr
-	}
-
-	overallSpeedStr := formatSpeed(overallSpeedBps)
-	etaStr := "N/A"
-
-	if !allFinished && overallSpeedBps > 0 && totalExpectedBytes > 0 && totalCurrentBytes < totalExpectedBytes {
-		remainingBytes := totalExpectedBytes - totalCurrentBytes
-		if remainingBytes > 0 {
-			etaStr = calculateETA(overallSpeedBps, totalExpectedBytes, totalCurrentBytes)
-		}
-	} else if allFinished {
-		etaStr = "Done"
-		overallSpeedStr = "Completed"
-	}
-
-	barWidth := progressBarWidth + 10
-	filledWidth := 0
-	if percentage > 0 {
-		filledWidth = int(math.Round(float64(barWidth) * percentage / 100.0))
-	}
-	if filledWidth > barWidth {
-		filledWidth = barWidth
-	}
-	if filledWidth < 0 {
-		filledWidth = 0
-	}
-	overallBar := "[" + strings.Repeat("=", filledWidth) + strings.Repeat(" ", barWidth-filledWidth) + "]"
-
-	return fmt.Sprintf("Overall %-*s %6.2f%% (%s / %s) @ %s ETA: %s (%d/%d files)",
-		barWidth+1,
-		overallBar,
-		percentage,
-		totalCurrentStr,
-		totalExpectedStr,
-		overallSpeedStr,
-		etaStr,
-		finishedFiles,
-		totalFiles,
-	)
-}
-
 func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
-	m.mu.Lock() // Lock for consistent snapshot of bars
+	m.mu.Lock()
 	barsSnapshot := make([]*ProgressWriter, len(m.bars))
 	for i, b := range m.bars {
-		if isFinalDraw { // Ensure final state for finished bars
+		if isFinalDraw {
 			b.mu.Lock()
 			if !b.IsFinished {
 				b.IsFinished = true
@@ -443,28 +363,38 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 			}
 			b.mu.Unlock()
 		}
-		barsSnapshot[i] = b // Store reference
+		barsSnapshot[i] = b
 	}
+	previousLines := m.linesPrinted
 	m.mu.Unlock()
 
 	stdoutMutex.Lock()
 	defer stdoutMutex.Unlock()
 
-	fmt.Print("\033[H\033[2J")
+	if previousLines > 0 {
+		fmt.Printf("\033[%dA", previousLines) // Move cursor up
+	}
 
-	fmt.Println("Download Progress:")
-	fmt.Println(strings.Repeat("-", 80))
-
+	currentLinesDrawn := 0
 	for _, bar := range barsSnapshot {
-		fmt.Println(bar.getProgressString()) // fmt.Println adds a newline
+		progressString := bar.getProgressString()
+		fmt.Printf("\033[2K%s\n", progressString) // Clear line, print, newline
+		currentLinesDrawn++
 	}
 
-	if len(barsSnapshot) > 0 {
-		fmt.Println(strings.Repeat("-", 80))                  // Separator before overall
-		fmt.Println(m.getOverallProgressString(barsSnapshot)) // fmt.Println adds a newline
+	if currentLinesDrawn < previousLines {
+		for i := currentLinesDrawn; i < previousLines; i++ {
+			fmt.Print("\033[2K\n")
+		}
+		if currentLinesDrawn > 0 {
+			fmt.Printf("\033[%dA", previousLines-currentLinesDrawn)
+		}
 	}
+	os.Stdout.Sync()
 
-	os.Stdout.Sync() // Ensure all output is flushed
+	m.mu.Lock()
+	m.linesPrinted = currentLinesDrawn
+	m.mu.Unlock()
 }
 
 func (m *ProgressManager) Stop() {
@@ -472,6 +402,7 @@ func (m *ProgressManager) Stop() {
 	m.wg.Wait()
 }
 
+// --- Download Logic & Main ---
 func downloadFile(url string, wg *sync.WaitGroup, downloadDir string, manager *ProgressManager) {
 	defer wg.Done()
 
@@ -496,33 +427,36 @@ func downloadFile(url string, wg *sync.WaitGroup, downloadDir string, manager *P
 	filePath := filepath.Join(downloadDir, fileName)
 
 	var initialTotalSize int64 = -1
-	headReq, _ := http.NewRequest("HEAD", url, nil)
-	headClient := http.Client{Timeout: 5 * time.Second}
-	headResp, headErr := headClient.Do(headReq)
-
-	if headErr == nil && headResp.StatusCode == http.StatusOK {
-		initialTotalSize = headResp.ContentLength
-		headResp.Body.Close()
+	headResp, headErr := http.Head(url)
+	if headErr == nil {
+		if headResp.StatusCode == http.StatusOK {
+			initialTotalSize = headResp.ContentLength
+		}
+		if headResp.Body != nil {
+			headResp.Body.Close()
+		}
 	}
 
 	pw := manager.AddDownload(fileName, initialTotalSize)
 
-	client := http.Client{}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		pw.MarkFinished(fmt.Sprintf("Req create: %v", shortenError(err, 15)))
+	out, createErr := os.Create(filePath)
+	if createErr != nil {
+		pw.MarkFinished(fmt.Sprintf("Create file: %v", shortenError(createErr, 15)))
 		return
 	}
+	defer out.Close()
 
-	resp, getErr := client.Do(req)
+	resp, getErr := http.Get(url)
 	if getErr != nil {
 		pw.MarkFinished(fmt.Sprintf("GET: %v", shortenError(getErr, 15)))
+		os.Remove(filePath)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		pw.MarkFinished(fmt.Sprintf("HTTP: %s", resp.Status))
+		os.Remove(filePath)
 		return
 	}
 
@@ -532,13 +466,6 @@ func downloadFile(url string, wg *sync.WaitGroup, downloadDir string, manager *P
 	}
 	pw.mu.Unlock()
 	manager.requestRedraw()
-
-	out, createErr := os.Create(filePath)
-	if createErr != nil {
-		pw.MarkFinished(fmt.Sprintf("Create file: %v", shortenError(createErr, 15)))
-		return
-	}
-	defer out.Close()
 
 	_, copyErr := io.Copy(out, io.TeeReader(resp.Body, pw))
 	if copyErr != nil {
@@ -558,17 +485,14 @@ func shortenError(err error, maxLen int) string {
 
 func main() {
 	var concurrency int
-	var urlsFilePath string
-
 	flag.IntVar(&concurrency, "c", 3, "Number of concurrent downloads")
-	flag.StringVar(&urlsFilePath, "f", "", "Path to the text file containing URLs")
 	flag.Parse()
 
-	if urlsFilePath == "" {
-		fmt.Println("Error: -f flag (file path) is required.")
-		flag.Usage()
+	if flag.NArg() < 1 {
+		fmt.Println("Usage: dl -c 6 filelist.txt")
 		os.Exit(1)
 	}
+	urlsFilePath := flag.Arg(0)
 
 	file, err := os.Open(urlsFilePath)
 	if err != nil {
@@ -605,24 +529,27 @@ func main() {
 
 	manager := NewProgressManager()
 
+	stdoutMutex.Lock()
 	fmt.Printf("Attempting to download %d files from '%s' into '%s' (concurrency: %d)...\n",
 		len(urls), urlsFilePath, downloadDir, concurrency)
-	time.Sleep(100 * time.Millisecond)
+	stdoutMutex.Unlock()
 
 	var downloadWG sync.WaitGroup
-	sem := make(chan struct{}, concurrency)
+	sem := make(chan struct{}, concurrency) // Semaphore to limit concurrency
 
 	for _, url := range urls {
-		sem <- struct{}{}
+		sem <- struct{}{} // Acquire semaphore slot
 		downloadWG.Add(1)
 		go func(u string) {
-			defer func() { <-sem }()
+			defer func() { <-sem }() // Release semaphore slot
 			downloadFile(u, &downloadWG, downloadDir, manager)
 		}(url)
 	}
 
 	downloadWG.Wait()
-	manager.Stop() // This will call performActualDraw(true) for the final state
+	manager.Stop()
 
-	fmt.Printf("All %d download tasks have been processed.\n", len(urls))
+	stdoutMutex.Lock()
+	fmt.Printf("\nAll %d download tasks have been processed.\n", len(urls))
+	stdoutMutex.Unlock()
 }
