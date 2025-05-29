@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal" // Added for signal handling
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall" // Added for signal types (SIGINT, SIGTERM)
 	"time"
 )
 
@@ -55,24 +57,61 @@ func main() {
 	flag.BoolVar(&selectFile, "select", false, "Allow selecting a specific .gguf file/series if downloading from a Hugging Face repository that is mainly .gguf files")
 	flag.Parse()
 
-	initLogging()
+	// Declare manager here so it's in scope for the defer and signal handler
+	var manager *ProgressManager
+
+	// Deferred function for panic recovery and final cleanup (like closing log file).
+	// This runs when main returns normally or panics. It does NOT run if os.Exit() is called directly.
 	defer func() {
+		if r := recover(); r != nil {
+			appLogger.Printf("PANIC encountered: %+v", r) // Log the panic details
+			fmt.Fprintf(os.Stderr, "\n[CRITICAL] Application panicked: %v\n", r)
+			if manager != nil {
+				fmt.Fprintln(os.Stderr, "[INFO] Attempting to restore terminal state due to panic...")
+				manager.Stop() // Attempt to stop manager gracefully, which should restore cursor
+			}
+		}
+		// This will be called on normal exit or after panic recovery.
+		// If a signal handler calls os.Exit(), this defer in main won't run.
 		if logFile != nil {
-			appLogger.Println("--- Logging Finished ---")
+			appLogger.Println("--- Main: Logging Finished (deferred close) ---")
 			logFile.Close()
 		}
 	}()
+
+	// Initialize logging system (depends on debugMode flag).
+	// logFile global variable is set here.
+	initLogging()
 	appLogger.Println("Application starting...")
+
+	// Setup signal handling for SIGINT (Ctrl+C) and SIGTERM.
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		sig := <-signalChan
+		appLogger.Printf("Signal received: %s. Initiating shutdown.", sig)
+		fmt.Fprintln(os.Stderr, "\n[INFO] Interrupt signal received. Cleaning up and exiting...")
+
+		if manager != nil {
+			manager.Stop() // Gracefully stop the progress manager, which restores the cursor.
+		}
+
+		if logFile != nil {
+			appLogger.Println("--- Main: Logging Finished (signal handler close) ---")
+			logFile.Close()
+		}
+		appLogger.Println("Exiting due to signal.")
+		os.Exit(1) // Exit after cleanup.
+	}()
 
 	if (urlsFilePath == "" && hfRepoInput == "") || (urlsFilePath != "" && hfRepoInput != "") {
 		appLogger.Println("Error: Provide -f OR -hf.")
 		fmt.Fprintln(os.Stderr, "Error: Provide -f OR -hf.")
 		flag.Usage()
-		os.Exit(1)
+		os.Exit(1) // Early exit: manager not started, cursor not hidden by app.
 	}
 
-	// Apply concurrency caps
-	// ... (concurrency logic remains the same) ...
 	if hfRepoInput != "" {
 		maxHfConcurrency := 4
 		if concurrency <= 0 {
@@ -364,12 +403,11 @@ func main() {
 	if len(finalDownloadItems) == 0 {
 		appLogger.Println("No URLs to download. Exiting.")
 		fmt.Fprintln(os.Stderr, "[INFO] No URLs to download. Exiting.")
-		os.Exit(0)
+		os.Exit(0) // Manager not started, cursor OK.
 	}
 
 	downloadDir := "downloads"
 	if hfRepoInput != "" {
-		// ... (downloadDir logic for HF remains the same) ...
 		var repoOwner, repoName string
 		tempRepoID := hfRepoInput
 		if strings.HasPrefix(hfRepoInput, "http") {
@@ -395,7 +433,7 @@ func main() {
 		}
 
 	}
-	if urlsFilePath != "" {
+	if urlsFilePath != "" { // Also create base download dir if it's from a file list
 		if _, statErr := os.Stat(downloadDir); os.IsNotExist(statErr) {
 			appLogger.Printf("Creating base download dir for file list: %s", downloadDir)
 			if mkDirErr := os.MkdirAll(downloadDir, 0755); mkDirErr != nil {
@@ -406,15 +444,19 @@ func main() {
 		}
 	}
 
-	manager := NewProgressManager(concurrency)
+	// --- Manager is initialized from this point onwards ---
+	// The cursor will be hidden by the ProgressManager's redrawLoop.
+	manager = NewProgressManager(concurrency)
+
 	fmt.Fprintf(os.Stderr, "[INFO] Pre-scanning %d file(s) for sizes (this may take a moment)...\n", len(finalDownloadItems))
 	if len(finalDownloadItems) > 0 {
+		// Initial draw call to show pending bars before pre-scan starts potentially long HEAD requests.
 		manager.performActualDraw(false)
 	}
 
 	allPWs := make([]*ProgressWriter, len(finalDownloadItems))
 	var preScanWG sync.WaitGroup
-	preScanSem := make(chan struct{}, 20)
+	preScanSem := make(chan struct{}, 20) // Concurrency for pre-scan HEAD requests
 	for i, item := range finalDownloadItems {
 		preScanWG.Add(1)
 		preScanSem <- struct{}{}
@@ -464,13 +506,14 @@ func main() {
 				}
 			}
 			allPWs[idx] = newProgressWriter(idx, dItem.URL, actualFile, initialSize, manager)
+			manager.requestRedraw() // Request redraw as each prescan finishes to update UI
 		}(i, item)
 	}
 	preScanWG.Wait()
-	close(preScanSem)
+	close(preScanSem) // Close semaphore channel
 	appLogger.Println("Pre-scan finished.")
 	fmt.Fprintln(os.Stderr, "[INFO] Pre-scan complete.")
-	manager.AddInitialDownloads(allPWs)
+	manager.AddInitialDownloads(allPWs) // Add all progress writers, triggers a redraw.
 
 	appLogger.Printf("Downloading %d file(s) to '%s' (concurrency: %d).", len(finalDownloadItems), downloadDir, concurrency)
 	fmt.Fprintf(os.Stderr, "[INFO] Starting downloads for %d file(s) to '%s' (concurrency: %d).\n", len(finalDownloadItems), downloadDir, concurrency)
@@ -487,6 +530,13 @@ func main() {
 	}
 	dlWG.Wait()
 	appLogger.Println("All downloads processed.")
-	manager.Stop()
+
+	// manager.Stop() is called here for normal completion.
+	// The main defer will also run, closing the logFile.
+	// If a signal was received, os.Exit(1) in the signal handler goroutine would have already terminated the program.
+	if manager != nil { // Should always be true if we reach here without panic/signal
+		manager.Stop()
+	}
 	fmt.Fprintf(os.Stderr, "All %d download tasks have been processed.\n", len(finalDownloadItems))
+	// Program exits normally here (implicit os.Exit(0)), main's defer runs.
 }

@@ -437,15 +437,18 @@ func (m *ProgressManager) redrawLoop() {
 	defer m.wg.Done()
 	ticker := time.NewTicker(redrawInterval)
 	defer ticker.Stop()
+
 	stdoutMutex.Lock()
-	fmt.Print("\033[?25l")
-	stdoutMutex.Unlock() // Hide cursor
+	fmt.Print("\033[?25l") // Hide cursor
+	stdoutMutex.Unlock()
+
 	defer func() {
 		m.performActualDraw(true) // Final draw to show all completed/errored
 		stdoutMutex.Lock()
-		fmt.Print("\033[?25h")
-		fmt.Println()
-		stdoutMutex.Unlock() // Show cursor and newline
+		fmt.Print("\033[?25h") // Show cursor
+		fmt.Println()          // Ensure prompt is on a new line after final output and cursor restoration
+		stdoutMutex.Unlock()
+		appLogger.Println("[PM.redrawLoop] Cursor restored, final draw performed.") // Log for confirmation
 	}()
 
 	for {
