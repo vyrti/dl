@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -16,10 +15,10 @@ import (
 )
 
 type workerStatus struct {
-	current  *int64 // Bytes downloaded for current file (atomic)
+	current  *int64 // Bytes downloaded for current file
 	total    int64  // Total file size (-1 if unknown)
 	filename string // Current filename
-	active   bool   // Whether worker is actively downloading
+	active   bool   // Whether worker is active
 }
 
 func main() {
@@ -39,7 +38,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	totalFiles := len(urls)
 	var (
 		completedFiles atomic.Uint32
 		downloadedSize atomic.Uint64
@@ -48,8 +46,6 @@ func main() {
 	)
 
 	startTime := time.Now()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	wg := new(sync.WaitGroup)
 	urlChan := make(chan string)
@@ -62,29 +58,6 @@ func main() {
 			active:  false,
 		}
 	}
-
-	// Progress display
-	progressTicker := time.NewTicker(100 * time.Millisecond)
-	defer progressTicker.Stop()
-
-	go func() {
-		prevLineCount := 0
-		for range progressTicker.C {
-			lineCount := printProgress(
-				workerStatuses,
-				&completedFiles,
-				&downloadedSize,
-				totalFiles,
-				startTime,
-			)
-
-			if lineCount > 0 {
-				// Move cursor up to redraw previous lines
-				fmt.Printf("\033[%dA", prevLineCount)
-			}
-			prevLineCount = lineCount
-		}
-	}()
 
 	// Start workers
 	for i := 0; i < *concurrencyFlag; i++ {
@@ -101,10 +74,13 @@ func main() {
 				if idx := strings.Index(ws.filename, "?"); idx != -1 {
 					ws.filename = ws.filename[:idx]
 				}
-				if ws.filename == "" || ws.filename == "." || ws.filename == "/" {
+				if ws.filename == "" {
 					ws.filename = "download"
 				}
 				ws.active = true
+
+				// Print starting message
+				fmt.Printf("Worker %d: Starting download: %s\n", workerID+1, ws.filename)
 
 				// Download file
 				size, err := downloadFileWithProgress(url, ws)
@@ -113,11 +89,12 @@ func main() {
 					errorLock.Lock()
 					errors = append(errors, fmt.Sprintf("%s: %v", url, err))
 					errorLock.Unlock()
+					fmt.Printf("Worker %d: Error: %v\n", workerID+1, err)
 				} else {
 					downloadedSize.Add(uint64(size))
 				}
 
-				// Mark worker as inactive
+				// Mark inactive
 				ws.active = false
 			}
 		}(i)
@@ -129,16 +106,22 @@ func main() {
 	}
 	close(urlChan)
 	wg.Wait()
-	progressTicker.Stop()
 
-	// Print final status with completed lines
-	fmt.Println() // Extra newline to move past progress display
-	printProgress(workerStatuses, &completedFiles, &downloadedSize, totalFiles, startTime)
-	fmt.Println() // Space after progress
+	// Print summary
+	totalMB := float64(downloadedSize.Load()) / (1024 * 1024)
+	elapsed := time.Since(startTime)
+
+	var speed float64
+	if elapsed.Seconds() > 0 {
+		speed = totalMB / elapsed.Seconds()
+	}
+
+	fmt.Printf("\nSummary: Downloaded %d files in %s (%.2f MB/s)\n",
+		completedFiles.Load(), elapsed.Round(time.Second), speed)
 
 	// Print any errors
 	if len(errors) > 0 {
-		fmt.Println("Errors encountered:")
+		fmt.Println("\nErrors encountered:")
 		for _, e := range errors {
 			fmt.Println("  ", e)
 		}
@@ -185,6 +168,8 @@ func downloadFileWithProgress(url string, ws *workerStatus) (int64, error) {
 	progressReader := &progressReader{
 		reader:  resp.Body,
 		counter: ws.current,
+		ws:      ws,
+		worker:  ws,
 	}
 
 	size, err := io.Copy(file, progressReader)
@@ -192,92 +177,46 @@ func downloadFileWithProgress(url string, ws *workerStatus) (int64, error) {
 		os.Remove(ws.filename)
 		return 0, fmt.Errorf("copy content: %w", err)
 	}
+
+	// Clear progress line after download completes
+	fmt.Printf("\r\033[K")
 	return size, nil
 }
 
 type progressReader struct {
 	reader  io.Reader
-	counter *int64 // Pointer to atomic counter
+	counter *int64
+	ws      *workerStatus
+	worker  *workerStatus
+	last    time.Time
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.reader.Read(p)
 	if n > 0 {
 		atomic.AddInt64(pr.counter, int64(n))
+
+		// Throttle progress updates to 10 times per second
+		if time.Since(pr.last) > 100*time.Millisecond {
+			pr.last = time.Now()
+			current := atomic.LoadInt64(pr.worker.current)
+			total := pr.worker.total
+
+			if total > 0 {
+				pct := float64(current) / float64(total) * 100
+				fmt.Printf("\rDownloading %s: %.1f%% (%s/%s)      ",
+					pr.worker.filename,
+					pct,
+					formatBytes(current),
+					formatBytes(total))
+			} else {
+				fmt.Printf("\rDownloading %s: %s       ",
+					pr.worker.filename,
+					formatBytes(current))
+			}
+		}
 	}
 	return n, err
-}
-
-func printProgress(
-	statuses []*workerStatus,
-	completedFiles *atomic.Uint32,
-	downloadedSize *atomic.Uint64,
-	total int,
-	start time.Time,
-) int {
-	completed := completedFiles.Load()
-	totalBytes := downloadedSize.Load()
-	elapsed := time.Since(start).Seconds()
-
-	// Calculate global progress
-	percent := float64(completed) / float64(total)
-	barWidth := 40
-	completeWidth := int(percent * float64(barWidth))
-	if completeWidth > barWidth {
-		completeWidth = barWidth
-	}
-	bar := "[" + strings.Repeat("=", completeWidth) + strings.Repeat(" ", barWidth-completeWidth) + "]"
-
-	// Calculate ETA
-	remaining := total - int(completed)
-	eta := "ETA: --:--:--"
-	if completed > 0 && remaining > 0 && elapsed > 0 {
-		avgTimePerFile := elapsed / float64(completed)
-		etaSeconds := avgTimePerFile * float64(remaining)
-		d := time.Duration(etaSeconds) * time.Second
-		eta = fmt.Sprintf("ETA: %02d:%02d:%02d", int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60)
-	}
-
-	// Calculate speed
-	speedMBps := 0.0
-	if elapsed > 0 {
-		speedMBps = float64(totalBytes) / (elapsed * 1024 * 1024)
-	}
-
-	// Print global progress
-	fmt.Printf("Global: %s %d/%d (%.1f%%) | Speed: %.1f MB/s | %s\n",
-		bar, completed, total, percent*100, speedMBps, eta)
-
-	linesPrinted := 1
-
-	// Print only active workers
-	for i, ws := range statuses {
-		if !ws.active {
-			continue
-		}
-
-		current := atomic.LoadInt64(ws.current)
-		progress := ""
-		if ws.total > 0 {
-			// Known size
-			pct := float64(current) / float64(ws.total)
-			progress = fmt.Sprintf("[%s%s] %.1f%% (%s/%s)",
-				strings.Repeat("=", int(pct*20)), // 20 character progress bar
-				strings.Repeat(" ", 20-int(pct*20)),
-				pct*100,
-				formatBytes(current),
-				formatBytes(ws.total),
-			)
-		} else {
-			// Unknown size
-			progress = fmt.Sprintf("%s downloaded                    ", formatBytes(current))
-		}
-
-		fmt.Printf("Worker %d: %-40s %s\n", i+1, progress, ws.filename)
-		linesPrinted++
-	}
-
-	return linesPrinted
 }
 
 func formatBytes(b int64) string {
