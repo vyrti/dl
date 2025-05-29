@@ -1,4 +1,4 @@
-// go/downloader.go
+// go.beta/downloader.go
 package main
 
 import (
@@ -48,7 +48,6 @@ func initLogging() {
 }
 
 // --- Formatting and Utility Functions ---
-// ... (formatSpeed, maxInt, calculateETA, shortenError, generateActualFilename - unchanged)
 func formatSpeed(bytesPerSecond float64) string {
 	if bytesPerSecond < 0 {
 		return "--- B/s"
@@ -141,37 +140,48 @@ func shortenError(err error, maxLen int) string {
 	return s
 }
 
-func generateActualFilename(urlStr string) string {
+func generateActualFilename(urlStr string, preferredBaseName string) string {
 	var fileName string
-	parsedURL, err := url.Parse(urlStr)
-	if err == nil {
-		fileName = path.Base(parsedURL.Path)
+	if preferredBaseName != "" {
+		// Ensure preferredBaseName is just a filename, not a path that could escape the download dir
+		fileName = filepath.Base(preferredBaseName)
+		// Basic sanitization, remove potentially problematic chars if any were in preferredBaseName
+		fileName = strings.ReplaceAll(fileName, "..", "") // Prevent path traversal
+		// Further sanitization could remove or replace other OS-specific forbidden characters
+		// For now, filepath.Base should handle most common cases for getting a valid name part.
 	} else {
-		fileName = filepath.Base(urlStr)
-		appLogger.Printf("[generateActualFilename] Warning: URL parsing failed for '%s', using filepath.Base as fallback: %v", urlStr, err)
+		parsedURL, err := url.Parse(urlStr)
+		if err == nil {
+			fileName = path.Base(parsedURL.Path)
+		} else {
+			fileName = filepath.Base(urlStr)
+			appLogger.Printf("[generateActualFilename] Warning: URL parsing failed for '%s', using filepath.Base as fallback: %v", urlStr, err)
+		}
 	}
 
-	if fileName == "." || fileName == "/" || fileName == "" {
+	if fileName == "." || fileName == "/" || fileName == "" || strings.HasPrefix(fileName, "?") { // Added check for names starting with ?
 		base := "download_" + strconv.FormatInt(time.Now().UnixNano(), 16)[:8]
 		originalBaseName := ""
-		if parsedURL != nil {
+		if preferredBaseName != "" {
+			originalBaseName = filepath.Base(preferredBaseName)
+		} else if parsedURL, err := url.Parse(urlStr); err == nil {
 			originalBaseName = path.Base(parsedURL.Path)
 		} else {
 			originalBaseName = filepath.Base(urlStr)
 		}
 		ext := filepath.Ext(originalBaseName)
-		if ext != "" && len(ext) > 1 && len(ext) < 7 && !strings.ContainsAny(ext, "?&=/:\\*\"<>|") {
+		// Ensure extension is somewhat sane
+		if ext != "" && len(ext) > 1 && len(ext) < 7 && !strings.ContainsAny(ext, "?&=/:\\*\"<>|") && ext != "." {
 			fileName = base + ext
 		} else {
 			fileName = base + ".file"
 		}
-		appLogger.Printf("[generateActualFilename] Generated filename '%s' for URL '%s'", fileName, urlStr)
+		appLogger.Printf("[generateActualFilename] Generated filename '%s' for URL '%s' (preferred: '%s')", fileName, urlStr, preferredBaseName)
 	}
 	return fileName
 }
 
 // --- ProgressWriter ---
-// ... (ProgressWriter struct and methods - unchanged)
 type ProgressWriter struct {
 	id                   int
 	URL                  string
@@ -461,7 +471,6 @@ func (m *ProgressManager) hasIndeterminateOrActiveBarsLocked() bool {
 	return false
 }
 
-// ... (getOverallProgressString - unchanged from previous corrected version)
 func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWriter) string {
 	var currentBytes, expectedBytes int64
 	var overallSpeed float64
@@ -699,7 +708,6 @@ func (m *ProgressManager) Stop() {
 }
 
 // --- Downloader Function ---
-// ... (downloadFile - unchanged from previous corrected version)
 func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, manager *ProgressManager) {
 	logPrefix := fmt.Sprintf("[downloadFile:%s]", pw.URL) // Use URL for logging as filename might not be unique if generated
 	appLogger.Printf("%s Download initiated for URL (File: %s).", logPrefix, pw.ActualFileName)

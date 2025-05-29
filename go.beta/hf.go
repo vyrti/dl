@@ -1,4 +1,4 @@
-// hf.go
+// go.beta/hf.go
 package main
 
 import (
@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// HFFile holds information about a file from Hugging Face.
+type HFFile struct {
+	URL      string
+	Filename string // Original filename from the repository (Sibling.Rfilename)
+}
+
 // --- Structs for Hugging Face API ---
 type RepoInfo struct {
 	Siblings []Sibling `json:"siblings"`
@@ -21,7 +27,7 @@ type Sibling struct {
 }
 
 // --- Hugging Face URL Fetching Logic ---
-func fetchHuggingFaceURLs(repoInput string) ([]string, error) {
+func fetchHuggingFaceURLs(repoInput string) ([]HFFile, error) {
 	appLogger.Printf("[HF] Processing Hugging Face repository input: %s", repoInput)
 
 	var repoID string
@@ -51,7 +57,7 @@ func fetchHuggingFaceURLs(repoInput string) ([]string, error) {
 		return nil, fmt.Errorf("invalid -hf input '%s'. Expected 'owner/repo_name' or full https://huggingface.co/owner/repo_name URL", repoInput)
 	}
 
-	branch := "main"
+	branch := "main" // Assuming "main" branch, could be parameterized if needed
 
 	appLogger.Printf("[HF] Determined RepoID: %s, Branch for download URLs: %s", repoID, branch)
 	fmt.Fprintf(os.Stderr, "[INFO] Fetching file list for repository: %s (branch: %s)...\n", repoID, branch)
@@ -77,13 +83,13 @@ func fetchHuggingFaceURLs(repoInput string) ([]string, error) {
 	if len(repoData.Siblings) == 0 {
 		appLogger.Printf("[HF] No files found in repository %s via API.", repoID)
 		fmt.Fprintf(os.Stderr, "[INFO] No files found in repository %s. The API might have changed or the repo is empty/private.\n", repoID)
-		return []string{}, nil
+		return []HFFile{}, nil
 	}
 
 	appLogger.Printf("[HF] Found %d file entries in repository %s.", len(repoData.Siblings), repoID)
-	fmt.Fprintf(os.Stderr, "[INFO] Found %d file entries. Generating download URLs...\n", len(repoData.Siblings))
+	fmt.Fprintf(os.Stderr, "[INFO] Found %d file entries. Generating download info...\n", len(repoData.Siblings))
 
-	var downloadURLs []string
+	var hfFiles []HFFile
 	for _, sibling := range repoData.Siblings {
 		if sibling.Rfilename == "" {
 			appLogger.Printf("[HF] Skipping sibling with empty rfilename.")
@@ -98,9 +104,9 @@ func fetchHuggingFaceURLs(repoInput string) ([]string, error) {
 		safeRfilenamePath := strings.Join(escapedRfilenameParts, "/")
 
 		dlURL := fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s?download=true", repoID, branch, safeRfilenamePath)
-		downloadURLs = append(downloadURLs, dlURL)
-		appLogger.Printf("[HF] Generated download URL: %s for rfilename: %s", dlURL, sibling.Rfilename)
+		hfFiles = append(hfFiles, HFFile{URL: dlURL, Filename: sibling.Rfilename})
+		appLogger.Printf("[HF] Generated download info: URL: %s for rfilename: %s", dlURL, sibling.Rfilename)
 	}
-	fmt.Fprintf(os.Stderr, "[INFO] Successfully generated %d download URLs from Hugging Face repository.\n", len(downloadURLs))
-	return downloadURLs, nil
+	fmt.Fprintf(os.Stderr, "[INFO] Successfully generated info for %d files from Hugging Face repository.\n", len(hfFiles))
+	return hfFiles, nil
 }
