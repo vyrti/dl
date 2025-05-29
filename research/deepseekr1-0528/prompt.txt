@@ -1,4 +1,4 @@
-deepseek r1 (reasoner)
+deepseek r1 (reasoner) 0528
 promtp:
 write app in go lang that will download all file from text file,
 text file must be specified using -f, also add concurrency option -c,

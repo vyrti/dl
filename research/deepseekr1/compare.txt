@@ -1,6 +1,6 @@
 Compare:
-Compare model: DeepSeek R1 Reasoner 05.2025
-Variant A: DeepSeek R1 Reasoner 05.2025
+Compare model: DeepSeek R1 Reasoner
+Variant A: DeepSeek R1
 Variant B: Claude 4 + Gemini 2.5 Pro
 
 The provided code is significantly better for several reasons, focusing on robustness, user experience, and proper terminal handling:

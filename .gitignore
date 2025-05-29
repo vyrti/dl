@@ -11,3 +11,5 @@ research/deepseekr1/*.gguf
 research/grok3/*.gguf
 research/gemini-flash-2.5/*.gguf
 research/gemini-flash-2.5/dl.gemini-flash-2.5
+research/deepseekr1-0528/dl.deepseekr1-0528
+research/deepseekr1-0528/*.gguf
