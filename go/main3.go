@@ -81,13 +81,34 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func calculateETA(speedBps float64, totalSize int64, currentSize int64) string {
+// calculateETA now takes an additional boolean to control second precision
+func calculateETA(speedBps float64, totalSize int64, currentSize int64, showSeconds bool) string {
 	if speedBps <= 0 || totalSize <= 0 || currentSize >= totalSize {
 		return "N/A"
 	}
+
 	remainingBytes := totalSize - currentSize
 	remainingSeconds := float64(remainingBytes) / speedBps
 
+	if !showSeconds { // Simplified ETA for overall progress
+		if remainingSeconds < 60 { // Less than a minute
+			return "<1 min"
+		}
+		if remainingSeconds < 3600 { // Less than an hour
+			minutes := math.Round(remainingSeconds / 60)
+			return fmt.Sprintf("%.0f min", minutes)
+		}
+		// More than or equal to an hour
+		hours := math.Floor(remainingSeconds / 3600)
+		minutes := math.Round(math.Mod(remainingSeconds, 3600) / 60)
+		if minutes == 60 { // Handle rounding up to 60 minutes
+			minutes = 0
+			hours++
+		}
+		return fmt.Sprintf("%.0f hr %.0f min", hours, minutes)
+	}
+
+	// Original precise ETA for individual bars
 	if remainingSeconds < 1 {
 		return "<1 sec"
 	}
@@ -264,7 +285,7 @@ func (pw *ProgressWriter) getProgressString() string {
 		if total <= 0 && current == 0 {
 			speedStr = "Pending "
 		} else if currentSpeed > 0 && total > 0 && current < total {
-			etaStr = calculateETA(currentSpeed, total, current)
+			etaStr = calculateETA(currentSpeed, total, current, true) // Show seconds for individual
 		} else if total > 0 && current == 0 {
 			speedStr = "Waiting "
 		}
@@ -479,11 +500,31 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 		percentage = 100.0
 	}
 
-	currentStr := fmt.Sprintf("%.2f MB", float64(currentBytes)/(1024*1024))
-	expectedStr := "???.?? MB"
-	if expectedBytes > 0 {
-		expectedStr = fmt.Sprintf("%.2f MB", float64(expectedBytes)/(1024*1024))
-	} else if allDone && totalTasks > 0 {
+	// Determine unit for overall size (MB or GB)
+	useGB := false
+	if expectedBytes >= 1024*1024*1024 { // If total is 1GB or more
+		useGB = true
+	}
+
+	var currentStr, expectedStr string
+	if useGB {
+		currentStr = fmt.Sprintf("%.2f GB", float64(currentBytes)/(1024*1024*1024))
+		if expectedBytes > 0 {
+			expectedStr = fmt.Sprintf("%.2f GB", float64(expectedBytes)/(1024*1024*1024))
+		} else {
+			expectedStr = "???.?? GB" // Should be caught by the next if block if allDone
+		}
+	} else {
+		currentStr = fmt.Sprintf("%.2f MB", float64(currentBytes)/(1024*1024))
+		if expectedBytes > 0 {
+			expectedStr = fmt.Sprintf("%.2f MB", float64(expectedBytes)/(1024*1024))
+		} else {
+			expectedStr = "???.?? MB" // Should be caught by the next if block if allDone
+		}
+	}
+	// If all tasks are done and the original expected size was unknown (<=0),
+	// set the expected string to be the same as the current downloaded string.
+	if allDone && totalTasks > 0 && expectedBytes <= 0 {
 		expectedStr = currentStr
 	}
 
@@ -491,7 +532,7 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 	if !allDone && overallSpeed > 0 && expectedBytes > 0 && currentBytes < expectedBytes {
 		remaining := expectedBytes - currentBytes
 		if remaining > 0 {
-			etaStr = calculateETA(overallSpeed, expectedBytes, currentBytes)
+			etaStr = calculateETA(overallSpeed, expectedBytes, currentBytes, false) // No seconds for overall
 		}
 	} else if allDone && totalTasks > 0 {
 		etaStr = "Done"
@@ -516,8 +557,11 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 	}
 	overallBar := "[" + strings.Repeat("=", filledW) + strings.Repeat(" ", barW-filledW) + "]"
 
-	return fmt.Sprintf("Overall %-*s %6.2f%% (%s / %s) @ %s ETA: %s (%d/%d files)",
-		barW+1, overallBar, percentage, currentStr, expectedStr, speedStr, etaStr, finishedTasks, totalTasks)
+	// Files info on a new line, indented
+	filesInfo := fmt.Sprintf("  (%d/%d files)", finishedTasks, totalTasks)
+
+	return fmt.Sprintf("Overall %-*s %6.2f%% (%s / %s) @ %s ETA: %s\n%s",
+		barW+1, overallBar, percentage, currentStr, expectedStr, speedStr, etaStr, filesInfo)
 }
 
 func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
@@ -590,7 +634,8 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 	if len(barsSnapshot) > 0 {           // Show overall progress if manager has been initialized with bars
 		fmt.Println(m.getOverallProgressString(barsSnapshot))
 	} else { // Placeholder if called before AddInitialDownloads (e.g., during slow pre-scan)
-		fmt.Printf("Overall [Processing...........................]   ---.-%% (--- MB / --- MB) @ Initializing... ETA: --- (0/? files)\n")
+		// Adjusted placeholder to match new overall format (files on next line)
+		fmt.Printf("Overall [Processing...........................]   ---.-%% (--- MB / --- MB) @ Initializing... ETA: ---\n  (0/? files)\n")
 	}
 	os.Stdout.Sync()
 }
@@ -668,46 +713,45 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 }
 
 // --- Hugging Face URL Fetching Logic ---
-func fetchHuggingFaceURLs(repoURLStr string) ([]string, error) {
-	appLogger.Printf("[HF] Processing Hugging Face repository URL: %s", repoURLStr)
+func fetchHuggingFaceURLs(repoInput string) ([]string, error) {
+	appLogger.Printf("[HF] Processing Hugging Face repository input: %s", repoInput)
 
-	parsedInputURL, err := url.Parse(repoURLStr)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing repository URL '%s': %w", repoURLStr, err)
-	}
-	if parsedInputURL.Host != "huggingface.co" {
-		return nil, fmt.Errorf("expected a huggingface.co URL, got: %s", parsedInputURL.Host)
+	var repoID string
+	// var parsedInputURL *url.URL // Keep for potential full URL parsing
+
+	// Check if the input is a full URL or just owner/repo
+	if strings.HasPrefix(repoInput, "http://") || strings.HasPrefix(repoInput, "https://") {
+		parsedInputURL, err := url.Parse(repoInput)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing repository URL '%s': %w", repoInput, err)
+		}
+		if parsedInputURL.Host != "huggingface.co" {
+			return nil, fmt.Errorf("expected a huggingface.co URL, got: %s", parsedInputURL.Host)
+		}
+		repoPath := strings.TrimPrefix(parsedInputURL.Path, "/")
+		pathParts := strings.Split(repoPath, "/")
+		if len(pathParts) < 2 {
+			return nil, fmt.Errorf("invalid repository path in URL. Expected 'owner/repo_name', got: '%s'", repoPath)
+		}
+		repoID = fmt.Sprintf("%s/%s", pathParts[0], pathParts[1])
+	} else if strings.Count(repoInput, "/") == 1 { // Assume owner/repo format
+		parts := strings.Split(repoInput, "/")
+		if len(parts[0]) > 0 && len(parts[1]) > 0 {
+			repoID = repoInput
+		} else {
+			return nil, fmt.Errorf("invalid repository ID format. Expected 'owner/repo_name', got: '%s'", repoInput)
+		}
+	} else {
+		return nil, fmt.Errorf("invalid -hf input '%s'. Expected 'owner/repo_name' or full https://huggingface.co/owner/repo_name URL", repoInput)
 	}
 
-	repoPath := strings.TrimPrefix(parsedInputURL.Path, "/")
-	pathParts := strings.Split(repoPath, "/")
-	if len(pathParts) < 2 {
-		return nil, fmt.Errorf("invalid repository path. Expected 'owner/repo_name', got: '%s'", repoPath)
-	}
+	branch := "main" // Default branch for download URLs
 
-	repoID := fmt.Sprintf("%s/%s", pathParts[0], pathParts[1])
-	branch := "main" // Default branch
-	// Check for explicit branch in URL like /owner/repo/tree/branch_name
-	if len(pathParts) > 3 && pathParts[2] == "tree" {
-		branch = pathParts[3]
-	}
-
-	appLogger.Printf("[HF] Extracted RepoID: %s, Branch: %s", repoID, branch)
+	appLogger.Printf("[HF] Determined RepoID: %s, Branch for download URLs: %s", repoID, branch)
 	fmt.Fprintf(os.Stderr, "[INFO] Fetching file list for repository: %s (branch: %s)...\n", repoID, branch)
 
-	// The /api/models/{repoID} endpoint (which returns "siblings" with "rfilename")
-	// seems to always point to the main branch's files.
-	// To support other branches or subfolders accurately, one would typically use:
-	// /api/models/{repoID}/tree/{branch}/{path_to_folder_if_any}
-	// This returns a list of items, each with a "path" field (relative to the repo root).
-	// For simplicity, this implementation primarily uses the /api/models/{repoID} endpoint,
-	// effectively targeting the main branch. If a branch is specified in the input URL,
-	// it's used for constructing download URLs, but the API call for listing files
-	// might not reflect that specific branch's file tree if it differs from main.
-	// This is a known simplification for this example.
-
 	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
-	appLogger.Printf("[HF] Using API endpoint for repo files (effectively main branch): %s", apiURL)
+	appLogger.Printf("[HF] Using API endpoint for repo files: %s", apiURL)
 
 	httpClient := http.Client{Timeout: 30 * time.Second}
 	resp, err := httpClient.Get(apiURL)
@@ -740,7 +784,6 @@ func fetchHuggingFaceURLs(repoURLStr string) ([]string, error) {
 			continue
 		}
 
-		// Rfilename can contain subdirectories. PathEscape each component.
 		rfilenameParts := strings.Split(sibling.Rfilename, "/")
 		escapedRfilenameParts := make([]string, len(rfilenameParts))
 		for i, p := range rfilenameParts {
@@ -748,7 +791,6 @@ func fetchHuggingFaceURLs(repoURLStr string) ([]string, error) {
 		}
 		safeRfilenamePath := strings.Join(escapedRfilenameParts, "/")
 
-		// Use the determined branch (default 'main' or from URL) for download URL construction
 		dlURL := fmt.Sprintf("https://huggingface.co/%s/resolve/%s/%s?download=true", repoID, branch, safeRfilenamePath)
 		downloadURLs = append(downloadURLs, dlURL)
 		appLogger.Printf("[HF] Generated download URL: %s for rfilename: %s", dlURL, sibling.Rfilename)
@@ -760,11 +802,11 @@ func fetchHuggingFaceURLs(repoURLStr string) ([]string, error) {
 // --- Main Application ---
 func main() {
 	var concurrency int
-	var urlsFilePath, hfRepoURL string
+	var urlsFilePath, hfRepoInput string
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug logging to log.log")
 	flag.IntVar(&concurrency, "c", 3, "Number of concurrent downloads & display lines")
 	flag.StringVar(&urlsFilePath, "f", "", "Path to text file containing URLs")
-	flag.StringVar(&hfRepoURL, "hf", "", "Hugging Face repository URL (e.g., https://huggingface.co/owner/repo)")
+	flag.StringVar(&hfRepoInput, "hf", "", "Hugging Face repository ID (e.g., owner/repo_name) or full URL")
 	flag.Parse()
 
 	initLogging()
@@ -775,30 +817,56 @@ func main() {
 		}
 	}()
 	appLogger.Println("Application starting...")
-	appLogger.Printf("Flags: Debug=%t, Concurrency=%d, FilePath='%s', HF Repo='%s'", debugMode, concurrency, urlsFilePath, hfRepoURL)
 
-	if (urlsFilePath == "" && hfRepoURL == "") || (urlsFilePath != "" && hfRepoURL != "") {
+	if (urlsFilePath == "" && hfRepoInput == "") || (urlsFilePath != "" && hfRepoInput != "") {
 		appLogger.Println("Error: Provide -f OR -hf.")
 		fmt.Fprintln(os.Stderr, "Error: Provide -f OR -hf.")
 		flag.Usage()
 		os.Exit(1)
 	}
+
+	// Apply concurrency caps
+	if hfRepoInput != "" {
+		maxHfConcurrency := 4
+		if concurrency <= 0 { // Ensure initial user input is positive before capping
+			fmt.Fprintf(os.Stderr, "[INFO] Concurrency must be positive. Defaulting to %d for -hf.\n", maxHfConcurrency)
+			concurrency = maxHfConcurrency
+		} else if concurrency > maxHfConcurrency {
+			fmt.Fprintf(os.Stderr, "[INFO] Concurrency for -hf is capped at %d. Using %d.\n", maxHfConcurrency, maxHfConcurrency)
+			appLogger.Printf("User specified concurrency %d for -hf, capped to %d.", concurrency, maxHfConcurrency)
+			concurrency = maxHfConcurrency
+		}
+	} else { // -f is used
+		maxFileConcurrency := 100
+		if concurrency <= 0 { // Ensure initial user input is positive
+			fmt.Fprintf(os.Stderr, "[INFO] Concurrency must be positive. Defaulting to 3 for -f.\n")
+			concurrency = 3 // A sensible default if user gives <=0 for -f
+		} else if concurrency > maxFileConcurrency {
+			fmt.Fprintf(os.Stderr, "[INFO] Concurrency for -f is capped at %d. Using %d.\n", maxFileConcurrency, maxFileConcurrency)
+			appLogger.Printf("User specified concurrency %d for -f, capped to %d.", concurrency, maxFileConcurrency)
+			concurrency = maxFileConcurrency
+		}
+	}
+	// Final check, though previous logic should ensure concurrency > 0
 	if concurrency <= 0 {
-		appLogger.Printf("Error: -c must be > 0.")
-		fmt.Fprintf(os.Stderr, "Error: -c must be > 0.\n")
+		appLogger.Printf("Error: Concurrency ended up <= 0 (%d). This shouldn't happen.", concurrency)
+		fmt.Fprintf(os.Stderr, "Internal Error: Concurrency value invalid (%d).\n", concurrency)
 		os.Exit(1)
 	}
+
+	appLogger.Printf("Effective Concurrency: %d. DebugMode: %t, FilePath: '%s', HF Repo Input: '%s'",
+		concurrency, debugMode, urlsFilePath, hfRepoInput)
 
 	var urls []string
 	var err error
 	fmt.Fprintln(os.Stderr, "[INFO] Initializing downloader...")
 
-	if hfRepoURL != "" {
-		fmt.Fprintf(os.Stderr, "[INFO] Preparing to fetch from Hugging Face repository: %s\n", hfRepoURL)
-		urls, err = fetchHuggingFaceURLs(hfRepoURL)
+	if hfRepoInput != "" {
+		fmt.Fprintf(os.Stderr, "[INFO] Preparing to fetch from Hugging Face repository: %s\n", hfRepoInput)
+		urls, err = fetchHuggingFaceURLs(hfRepoInput)
 		if err != nil {
-			appLogger.Printf("Error fetching from HF '%s': %v", hfRepoURL, err)
-			fmt.Fprintf(os.Stderr, "Error fetching from HF '%s': %v\n", hfRepoURL, err)
+			appLogger.Printf("Error fetching from HF '%s': %v", hfRepoInput, err)
+			fmt.Fprintf(os.Stderr, "Error fetching from HF '%s': %v\n", hfRepoInput, err)
 			os.Exit(1)
 		}
 	} else {
@@ -835,21 +903,41 @@ func main() {
 	}
 
 	downloadDir := "downloads"
-	if hfRepoURL != "" {
-		parsedHF, _ := url.Parse(hfRepoURL) // Error already handled in fetchHuggingFaceURLs
-		if parsedHF != nil {
-			repoPathParts := strings.Split(strings.Trim(parsedHF.Path, "/"), "/")
-			if len(repoPathParts) >= 2 {
-				// Create a subdir like "owner_repo"
-				repoSubDir := strings.Join(repoPathParts[0:2], "_")
-				// Sanitize for file system paths (remove ".." and path separators)
-				repoSubDir = strings.ReplaceAll(repoSubDir, "..", "")
-				repoSubDir = strings.ReplaceAll(repoSubDir, string(os.PathSeparator), "_")
-				downloadDir = filepath.Join(downloadDir, repoSubDir)
-				appLogger.Printf("[Main] Using HF download subdir: %s", downloadDir)
+	if hfRepoInput != "" {
+		var repoOwner, repoName string
+		if strings.Contains(hfRepoInput, "/") {
+			tempRepoID := hfRepoInput
+			if strings.HasPrefix(hfRepoInput, "http") {
+				parsedHF, parseErr := url.Parse(hfRepoInput)
+				if parseErr == nil && parsedHF != nil {
+					repoPath := strings.TrimPrefix(parsedHF.Path, "/")
+					pathParts := strings.Split(repoPath, "/")
+					if len(pathParts) >= 2 {
+						tempRepoID = fmt.Sprintf("%s/%s", pathParts[0], pathParts[1])
+					}
+				} else if parseErr != nil {
+					appLogger.Printf("[Main] Error parsing full HF URL for subdir: %v", parseErr)
+				}
+			}
+			parts := strings.Split(tempRepoID, "/")
+			if len(parts) == 2 {
+				repoOwner = parts[0]
+				repoName = parts[1]
 			}
 		}
+
+		if repoOwner != "" && repoName != "" {
+			repoSubDir := strings.ReplaceAll(repoOwner+"_"+repoName, "..", "")         // Basic sanitization
+			repoSubDir = strings.ReplaceAll(repoSubDir, string(os.PathSeparator), "_") // Replace path separators
+			repoSubDir = strings.ReplaceAll(repoSubDir, ":", "_")                      // Replace colons
+			// Add more sanitization if needed for other invalid characters
+			downloadDir = filepath.Join(downloadDir, repoSubDir)
+			appLogger.Printf("[Main] Using HF download subdir: %s", downloadDir)
+		} else {
+			appLogger.Printf("[Main] Could not determine owner/repo from HF input '%s' for subdir creation, using default 'downloads'", hfRepoInput)
+		}
 	}
+
 	if _, statErr := os.Stat(downloadDir); os.IsNotExist(statErr) {
 		appLogger.Printf("Creating download dir: %s", downloadDir)
 		if mkDirErr := os.MkdirAll(downloadDir, 0755); mkDirErr != nil {
@@ -861,9 +949,8 @@ func main() {
 
 	manager := NewProgressManager(concurrency)
 	fmt.Fprintf(os.Stderr, "[INFO] Pre-scanning %d URLs for sizes (this may take a moment)...\n", len(urls))
-	// Show initial "Processing..." state if pre-scan is slow
-	if len(urls) > 0 { // only if there are URLs to process
-		manager.performActualDraw(false)
+	if len(urls) > 0 {
+		manager.performActualDraw(false) // Show initial "Processing..." state
 	}
 
 	allPWs := make([]*ProgressWriter, len(urls))
@@ -892,11 +979,13 @@ func main() {
 			} else {
 				if headErr != nil {
 					appLogger.Printf("[PreScan:%s] HEAD error: %v for %s. Size unknown.", u, headErr, actualFile)
-				} else {
+				} else if headResp != nil {
 					appLogger.Printf("[PreScan:%s] HEAD non-OK status: %s for %s. Size unknown.", u, headResp.Status, actualFile)
 					if headResp.Body != nil {
 						headResp.Body.Close()
 					}
+				} else {
+					appLogger.Printf("[PreScan:%s] HEAD error (no response): %v for %s. Size unknown.", u, headErr, actualFile)
 				}
 			}
 			allPWs[idx] = newProgressWriter(idx, u, actualFile, initialSize, manager)
@@ -906,7 +995,7 @@ func main() {
 	close(preScanSem)
 	appLogger.Println("Pre-scan finished.")
 	fmt.Fprintln(os.Stderr, "[INFO] Pre-scan complete.")
-	manager.AddInitialDownloads(allPWs) // Now add all bars to the manager
+	manager.AddInitialDownloads(allPWs)
 
 	appLogger.Printf("Downloading %d files to '%s' (concurrency: %d).", len(urls), downloadDir, concurrency)
 	fmt.Fprintf(os.Stderr, "[INFO] Starting downloads for %d files to '%s' (concurrency: %d).\n", len(urls), downloadDir, concurrency)
@@ -917,7 +1006,7 @@ func main() {
 		dlSem <- struct{}{}
 		dlWG.Add(1)
 		go func(pWriter *ProgressWriter) {
-			defer func() { <-dlSem }() // Release semaphore inside this goroutine's defer
+			defer func() { <-dlSem }()
 			downloadFile(pWriter, &dlWG, downloadDir, manager)
 		}(pw)
 	}
