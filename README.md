@@ -40,8 +40,11 @@ This is a separate implementation of the downloader tool written in Rust.
 *   `<path_to_urls_file>`: (Required) The path to the text file containing the URLs to download.
 
 ## Research
+Main working application using GO lang in this repo was created using base code from Claude Sonnet 4 with Gemini 2.5 Pro review. Two models was working on same code, one after another. Result in this repo is 2 prompts total. One prompt for each model.
 
-The `research/` folder contains experimental or alternative implementations and related analysis from various AI models. Each subdirectory corresponds to a model's attempt to generate the downloader tool based on a specific prompt. The `info.txt` file in each directory summarizes the outcome of the interaction with the model.
+Rust version was also created by Claude Sonnet 4 with Gemini 2.5 Pro review with 5 promts.
+
+The `research/` folder contains experimental or alternative implementations and related analysis from various AI models, in a try to create app with one model ONLY. Each subdirectory corresponds to a model's attempt to generate the downloader tool based on a specific prompt. The `info.txt` file in each directory summarizes the outcome of the interaction with the model.
 
 *   `chatgpt-canvas/`:
     *   no working code after 5 additional prompts
@@ -51,9 +54,9 @@ The `research/` folder contains experimental or alternative implementations and 
 *   `deepseekr1/`:
     *   working code after 2 prompts
 *   `deepseekr1-0528/`:
-    *   no working code after 8 additional prompts
+    *   no working code after 8 (!) additional prompts
 *   `gemini-2.5-pro/`:
-    *   3 prompts
+    *   working code after 4 prompts, more functions than in main app in this repo
 *   `gemini-flash-2.5/`:
     *   no working code after 5 correcting promts
     *   only model that gave 10 diff code options
