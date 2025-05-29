@@ -8,15 +8,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal" // Added for signal handling
-	"path"      // For path.Base with URLs
+	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall" // Added for signal types (SIGINT, SIGTERM)
+	"syscall"
 	"time"
 )
 
@@ -61,14 +61,16 @@ var modelRegistry = map[string]string{
 // --- Main Application ---
 func main() {
 	var concurrency int
-	var urlsFilePath, hfRepoInput, modelName string // Added modelName
+	var urlsFilePath, hfRepoInput, modelName string
 	var selectFile bool
+	var showSysInfo bool // New flag for -t
 
 	flag.BoolVar(&debugMode, "debug", false, "Enable debug logging to log.log")
+	flag.BoolVar(&showSysInfo, "t", false, "Show system hardware information and exit") // Added -t flag
 	flag.IntVar(&concurrency, "c", 3, "Number of concurrent downloads & display lines (forced to 1 if -m is used)")
 	flag.StringVar(&urlsFilePath, "f", "", "Path to text file containing URLs")
 	flag.StringVar(&hfRepoInput, "hf", "", "Hugging Face repository ID (e.g., owner/repo_name) or full URL")
-	flag.StringVar(&modelName, "m", "", "Predefined model alias to download (list: qwen3-0.6b, qwen3-1.6b, qwen3-4b, qwen3-16b, qwen3-32b, qwen3-30b-moe, gemma3-27b )") // New flag
+	flag.StringVar(&modelName, "m", "", "Predefined model alias to download (list: qwen3-0.6b, qwen3-1.6b, qwen3-4b, qwen3-16b, qwen3-32b, qwen3-30b-moe, gemma3-27b )")
 	flag.BoolVar(&selectFile, "select", false, "Allow selecting a specific .gguf file/series if downloading from a Hugging Face repository that is mainly .gguf files")
 	flag.Parse()
 
@@ -78,7 +80,13 @@ func main() {
 	// Deferred function for panic recovery and final cleanup (like closing log file).
 	defer func() {
 		if r := recover(); r != nil {
-			appLogger.Printf("PANIC encountered: %+v", r) // Log the panic details
+			// Ensure appLogger is initialized before using it in panic handler
+			if appLogger != nil {
+				appLogger.Printf("PANIC encountered: %+v", r)
+			} else {
+				// Fallback if logger wasn't set up (e.g., panic during initLogging or before)
+				fmt.Fprintf(os.Stderr, "PANIC encountered before logger initialization: %+v\n", r)
+			}
 			fmt.Fprintf(os.Stderr, "\n[CRITICAL] Application panicked: %v\n", r)
 			if manager != nil {
 				fmt.Fprintln(os.Stderr, "[INFO] Attempting to restore terminal state due to panic...")
@@ -86,12 +94,23 @@ func main() {
 			}
 		}
 		if logFile != nil {
-			appLogger.Println("--- Main: Logging Finished (deferred close) ---")
+			if appLogger != nil { // Check again in case initLogging failed but logFile was opened
+				appLogger.Println("--- Main: Logging Finished (deferred close) ---")
+			}
 			logFile.Close()
 		}
 	}()
 
-	initLogging()
+	initLogging() // Initialize logging as early as possible
+
+	// Handle -t immediately if set
+	if showSysInfo {
+		appLogger.Println("[Main] System info requested via -t flag. Displaying info and exiting.")
+		ShowSystemInfo() // This function is in test.go (package main)
+		os.Exit(0)
+	}
+
+	// This log message is for non -t runs
 	appLogger.Println("Application starting...")
 
 	// Setup signal handling for SIGINT (Ctrl+C) and SIGTERM.
@@ -105,12 +124,13 @@ func main() {
 		if manager != nil {
 			manager.Stop()
 		}
+		// Ensure log file is closed on interrupt as well
 		if logFile != nil {
 			appLogger.Println("--- Main: Logging Finished (signal handler close) ---")
 			logFile.Close()
 		}
 		appLogger.Println("Exiting due to signal.")
-		os.Exit(1)
+		os.Exit(1) // Exit after cleanup
 	}()
 
 	// --- Mode Validation (ensure only one of -f, -hf, -m is used) ---
@@ -125,9 +145,10 @@ func main() {
 		modesSet++
 	}
 
+	// This validation runs if -t was NOT specified (as -t would have exited)
 	if modesSet == 0 {
 		appLogger.Println("Error: No download mode specified. Provide -f, -hf, or -m.")
-		fmt.Fprintln(os.Stderr, "Error: No download mode specified. Provide one of -f (file), -hf (Hugging Face repo), or -m (model alias).")
+		fmt.Fprintln(os.Stderr, "Error: No download mode specified. Provide one of -f (file), -hf (Hugging Face repo), or -m (model alias). Or use -t to show system info.")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -143,7 +164,7 @@ func main() {
 		concurrency = 1 // Force concurrency to 1 for single model download
 		appLogger.Printf("Concurrency overridden to 1 for -m (single model download). Display lines also effectively 1.")
 	} else if hfRepoInput != "" {
-		maxHfConcurrency := 4
+		maxHfConcurrency := 4 // Example cap for HF
 		if concurrency <= 0 {
 			fmt.Fprintf(os.Stderr, "[INFO] Concurrency must be positive. Defaulting to %d for -hf.\n", maxHfConcurrency)
 			concurrency = maxHfConcurrency
@@ -153,20 +174,20 @@ func main() {
 			concurrency = maxHfConcurrency
 		}
 	} else { // urlsFilePath is used
-		maxFileConcurrency := 100
+		maxFileConcurrency := 100 // Example cap for file lists
 		if concurrency <= 0 {
 			fmt.Fprintf(os.Stderr, "[INFO] Concurrency must be positive. Defaulting to 3 for -f.\n")
-			concurrency = 3
+			concurrency = 3 // Default for -f
 		} else if concurrency > maxFileConcurrency {
 			fmt.Fprintf(os.Stderr, "[INFO] Concurrency for -f is capped at %d. Using %d.\n", maxFileConcurrency, maxFileConcurrency)
 			appLogger.Printf("User specified concurrency %d for -f, capped to %d.", concurrency, maxFileConcurrency)
 			concurrency = maxFileConcurrency
 		}
 	}
-	if concurrency <= 0 {
-		appLogger.Printf("Error: Concurrency ended up <= 0 (%d). This shouldn't happen.", concurrency)
-		fmt.Fprintf(os.Stderr, "Internal Error: Concurrency value invalid (%d).\n", concurrency)
-		os.Exit(1)
+	if concurrency <= 0 { // Should ideally not happen with above logic
+		appLogger.Printf("Error: Concurrency ended up <= 0 (%d). This shouldn't happen. Defaulting to 1.", concurrency)
+		fmt.Fprintf(os.Stderr, "Internal Error: Concurrency value invalid (%d). Defaulting to 1.\n", concurrency)
+		concurrency = 1
 	}
 
 	appLogger.Printf("Effective Concurrency (for downloads and display lines): %d. DebugMode: %t, FilePath: '%s', HF Repo Input: '%s', ModelName: '%s', SelectMode: %t",
@@ -287,6 +308,10 @@ func main() {
 								statusStr := "N/A"
 								if headResp != nil {
 									statusStr = headResp.Status
+									// Ensure body is closed even on error if it exists
+									if headResp.Body != nil {
+										headResp.Body.Close()
+									}
 								}
 								appLogger.Printf("[EarlyPreScan:%s] HEAD failed for '%s'. Error: %v, Status: %s", fileToScan.URL, fileToScan.Filename, headErr, statusStr)
 							}
@@ -296,7 +321,7 @@ func main() {
 					earlyPreScanWG.Wait()
 
 					for _, res := range earlyScanResults {
-						if res.URL != "" {
+						if res.URL != "" { // Ensure URL is not empty before using as key
 							hfFileSizes[res.URL] = res.Size
 						}
 					}
@@ -337,6 +362,7 @@ func main() {
 					}
 				}
 
+				// Sort files within each series by part number
 				for _, seriesInfo := range seriesMap {
 					sort.Slice(seriesInfo.FilesWithPart, func(i, j int) bool {
 						return seriesInfo.FilesWithPart[i].PartNum < seriesInfo.FilesWithPart[j].PartNum
@@ -344,6 +370,7 @@ func main() {
 				}
 
 				var displayableItems []SelectableGGUFItem
+				// Sort series by key for consistent display order
 				sortedSeriesKeys := make([]string, 0, len(seriesMap))
 				for k := range seriesMap {
 					sortedSeriesKeys = append(sortedSeriesKeys, k)
@@ -352,7 +379,7 @@ func main() {
 
 				for _, seriesKey := range sortedSeriesKeys {
 					seriesInfo := seriesMap[seriesKey]
-					if len(seriesInfo.FilesWithPart) == 0 {
+					if len(seriesInfo.FilesWithPart) == 0 { // Should not happen if map was populated correctly
 						continue
 					}
 					filesInSeries := make([]HFFile, len(seriesInfo.FilesWithPart))
@@ -369,9 +396,11 @@ func main() {
 					}
 
 					sizeStr := ", size unknown"
-					if allSizesKnownInSeries {
+					if allSizesKnownInSeries && totalSeriesSizeBytes > 0 {
 						sizeGB := float64(totalSeriesSizeBytes) / (1024 * 1024 * 1024)
 						sizeStr = fmt.Sprintf(", %.2f GB", sizeGB)
+					} else if allSizesKnownInSeries && totalSeriesSizeBytes == 0 { // All parts are 0 bytes or size scan failed for all.
+						sizeStr = ", 0.00 GB (or scan failed)"
 					}
 
 					displayName := fmt.Sprintf("Series: %s (%d parts%s, e.g., %s)", seriesInfo.BaseName, seriesInfo.TotalParts, sizeStr, filepath.Base(seriesInfo.FilesWithPart[0].File.Filename))
@@ -381,6 +410,7 @@ func main() {
 					})
 				}
 
+				// Sort standalone GGUFs by filename
 				sort.Slice(standaloneGGUFs, func(i, j int) bool { return standaloneGGUFs[i].Filename < standaloneGGUFs[j].Filename })
 				for _, hfFile := range standaloneGGUFs {
 					size, ok := hfFileSizes[hfFile.URL]
@@ -399,7 +429,7 @@ func main() {
 				if len(displayableItems) == 0 {
 					fmt.Fprintf(os.Stderr, "[INFO] No .gguf files or series found for selection, despite repo being mainly GGUF. Downloading all %d files.\n", len(allRepoFiles))
 					appLogger.Println("[Main] No displayable GGUF items, downloading all files.")
-					// selectedHfFiles is already allRepoFiles by default
+					// selectedHfFiles is already allRepoFiles by default, so no change needed here.
 				} else if len(displayableItems) == 1 {
 					selectedHfFiles = displayableItems[0].FilesToDownload
 					fmt.Fprintf(os.Stderr, "[INFO] Auto-selecting the only available GGUF item: %s (%d file(s))\n", displayableItems[0].DisplayName, len(selectedHfFiles))
@@ -430,47 +460,56 @@ func main() {
 					appLogger.Printf("[Main] User selected item %d: %s, %d files", selectedIndex, displayableItems[selectedIndex-1].DisplayName, len(selectedHfFiles))
 					fmt.Fprintf(os.Stderr, "[INFO] Selected for download: %s (%d file(s))\n", displayableItems[selectedIndex-1].DisplayName, len(selectedHfFiles))
 				}
-			} else if ggufCount > 0 {
+			} else if ggufCount > 0 { // Repo has GGUFs, but not "mainly GGUF" by the threshold
 				fmt.Fprintf(os.Stderr, "[INFO] -select flag was provided, but the repository is not detected as mainly .gguf files (GGUF files: %d of %d total). Proceeding with all %d files from repository.\n", ggufCount, len(allRepoFiles), len(allRepoFiles))
 				appLogger.Printf("[Main] -select active, but not mainly .gguf (gguf: %d, total: %d). All %d files will be downloaded.", ggufCount, len(allRepoFiles), len(allRepoFiles))
-			} else {
+				// selectedHfFiles is already allRepoFiles
+			} else { // No GGUF files found at all
 				fmt.Fprintf(os.Stderr, "[INFO] -select flag was provided, but no .gguf files were found in the repository. Proceeding with all %d files from repository.\n", len(allRepoFiles))
 				appLogger.Printf("[Main] -select active, but no .gguf files found. All %d files will be downloaded.", len(allRepoFiles))
+				// selectedHfFiles is already allRepoFiles
 			}
 		} // End of if selectFile
 
+		// Populate finalDownloadItems from the selected (or all) HF files
+		finalDownloadItems = make([]DownloadItem, 0, len(selectedHfFiles)) // Pre-allocate
 		for _, hfFile := range selectedHfFiles {
 			finalDownloadItems = append(finalDownloadItems, DownloadItem{URL: hfFile.URL, PreferredFilename: hfFile.Filename})
 		}
 
 		// Determine downloadDir for -hf
-		var repoOwnerClean, repoNameClean string // CORRECTED DECLARATION
+		var repoOwnerClean, repoNameClean string
 		tempRepoID := hfRepoInput
+		// Try to parse repoID from full URL if provided
 		if strings.HasPrefix(hfRepoInput, "http") {
 			parsedHF, parseErr := url.Parse(hfRepoInput)
 			if parseErr == nil && parsedHF != nil && parsedHF.Host == "huggingface.co" {
 				repoPath := strings.TrimPrefix(parsedHF.Path, "/")
 				pathParts := strings.Split(repoPath, "/")
-				if len(pathParts) >= 2 {
+				if len(pathParts) >= 2 { // Ensure owner/repo_name structure
 					tempRepoID = fmt.Sprintf("%s/%s", pathParts[0], pathParts[1])
 				}
 			} else if parseErr != nil {
-				appLogger.Printf("[Main] Error parsing full HF URL '%s' for subdir: %v", hfRepoInput, parseErr)
+				appLogger.Printf("[Main] Error parsing full HF URL '%s' for subdir: %v. Using original input for dir name.", hfRepoInput, parseErr)
 			}
 		}
+		// Sanitize parts for directory name
 		parts := strings.Split(tempRepoID, "/")
 		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
 			repoOwnerClean = strings.ReplaceAll(strings.ReplaceAll(parts[0], string(os.PathSeparator), "_"), "..", "")
 			repoNameClean = strings.ReplaceAll(strings.ReplaceAll(parts[1], string(os.PathSeparator), "_"), "..", "")
 			downloadDir = filepath.Join("downloads", fmt.Sprintf("%s_%s", repoOwnerClean, repoNameClean))
 		} else {
-			downloadDir = filepath.Join("downloads", "hf_download") // Fallback if parsing fails
-			appLogger.Printf("[Main] Could not determine owner/repo from HF input '%s' for subdir creation, using fallback '%s'", hfRepoInput, downloadDir)
+			// Fallback if parsing fails or format is unexpected
+			sanitizedInput := strings.ReplaceAll(strings.ReplaceAll(hfRepoInput, "/", "_"), string(os.PathSeparator), "_")
+			sanitizedInput = strings.ReplaceAll(sanitizedInput, "..", "") // Basic path traversal prevention
+			downloadDir = filepath.Join("downloads", "hf_"+sanitizedInput)
+			appLogger.Printf("[Main] Could not determine owner/repo from HF input '%s' for subdir creation, using fallback dir name based on input: '%s'", hfRepoInput, downloadDir)
 		}
 		appLogger.Printf("[Main] Download directory set to: %s for HF repo '%s'", downloadDir, hfRepoInput)
 
 	} else { // urlsFilePath is used
-		if selectFile {
+		if selectFile { // -select is ignored with -f
 			fmt.Fprintln(os.Stderr, "[WARN] -select flag is ignored when using -f to specify a URL file.")
 			appLogger.Printf("[Main] -select flag ignored with -f option.")
 		}
@@ -481,12 +520,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error opening '%s': %v\n", urlsFilePath, ferr)
 			os.Exit(1)
 		}
-		defer file.Close()
+		defer file.Close() // Ensure file is closed
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			urlStr := strings.TrimSpace(scanner.Text())
-			if urlStr != "" {
-				finalDownloadItems = append(finalDownloadItems, DownloadItem{URL: urlStr, PreferredFilename: ""})
+			if urlStr != "" { // Skip empty lines
+				finalDownloadItems = append(finalDownloadItems, DownloadItem{URL: urlStr, PreferredFilename: ""}) // No preferred filename from URL list
 			}
 		}
 		if serr := scanner.Err(); serr != nil {
@@ -497,7 +536,7 @@ func main() {
 		appLogger.Printf("Read %d URLs from '%s'.", len(finalDownloadItems), urlsFilePath)
 		fmt.Fprintf(os.Stderr, "[INFO] Read %d URLs from '%s'.\n", len(finalDownloadItems), urlsFilePath)
 
-		downloadDir = "downloads" // Default for -f
+		downloadDir = "downloads" // Default download directory for -f
 		appLogger.Printf("[Main] Download directory set to: %s for file list '%s'", downloadDir, urlsFilePath)
 	}
 
@@ -527,7 +566,8 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "[INFO] Pre-scanning %d file(s) for sizes (this may take a moment)...\n", len(finalDownloadItems))
 	if len(finalDownloadItems) > 0 {
-		manager.performActualDraw(false)
+		// Optional: Could call manager.performActualDraw(false) here to show "Pending..." bars earlier,
+		// but they will fill in as pre-scan completes anyway.
 	}
 
 	allPWs := make([]*ProgressWriter, len(finalDownloadItems))
@@ -545,7 +585,7 @@ func main() {
 			var initialSize int64 = -1
 
 			// Use hfFileSizes if available (populated by -hf with -select's early scan)
-			if hfFileSizes != nil {
+			if hfFileSizes != nil { // Check if map exists
 				if size, ok := hfFileSizes[dItem.URL]; ok {
 					initialSize = size
 					if size > -1 {
@@ -559,12 +599,12 @@ func main() {
 			if initialSize == -1 { // Size not pre-fetched or pre-fetch failed/returned -1
 				headReq, _ := http.NewRequest("HEAD", dItem.URL, nil)
 				headReq.Header.Set("User-Agent", "Go-File-Downloader/1.1 (PreScan-HEAD)")
-				headClient := http.Client{Timeout: 10 * time.Second}
+				headClient := http.Client{Timeout: 10 * time.Second} // Reasonable timeout for HEAD
 				headResp, headErr := headClient.Do(headReq)
 				if headErr == nil && headResp.StatusCode == http.StatusOK {
 					initialSize = headResp.ContentLength
 					if headResp.Body != nil {
-						headResp.Body.Close()
+						headResp.Body.Close() // Important to close body
 					}
 					appLogger.Printf("[PreScan:%s] HEAD success. Size: %d for '%s'", dItem.URL, initialSize, actualFile)
 				} else {
@@ -577,39 +617,44 @@ func main() {
 					}
 					if headErr != nil {
 						appLogger.Printf("[PreScan:%s] HEAD error for '%s': %v. Size unknown.", dItem.URL, actualFile, headErr)
-					} else {
+					} else { // Non-OK status
 						appLogger.Printf("[PreScan:%s] HEAD non-OK status for '%s': %s. Size unknown.", dItem.URL, actualFile, statusStr)
 					}
+					// initialSize remains -1 (unknown)
 				}
 			}
 			allPWs[idx] = newProgressWriter(idx, dItem.URL, actualFile, initialSize, manager)
-			manager.requestRedraw()
+			manager.requestRedraw() // Request redraw as each pre-scan completes
 		}(i, item)
 	}
 	preScanWG.Wait()
-	close(preScanSem)
+	// Semaphores manage themselves by goroutines finishing. No need to close preScanSem.
 	appLogger.Println("Pre-scan finished.")
 	fmt.Fprintln(os.Stderr, "[INFO] Pre-scan complete.")
 	manager.AddInitialDownloads(allPWs)
+	if len(finalDownloadItems) > 0 { // Perform a draw now that initial sizes are (mostly) known
+		manager.performActualDraw(false)
+	}
 
 	appLogger.Printf("Downloading %d file(s) to '%s' (concurrency: %d).", len(finalDownloadItems), downloadDir, concurrency)
 	fmt.Fprintf(os.Stderr, "[INFO] Starting downloads for %d file(s) to '%s' (concurrency: %d).\n", len(finalDownloadItems), downloadDir, concurrency)
 
 	var dlWG sync.WaitGroup
 	dlSem := make(chan struct{}, concurrency) // Use the finalized concurrency
-	for _, pw := range allPWs {
+	for _, pw := range allPWs {               // Iterate over the progress writers created earlier
 		dlSem <- struct{}{}
 		dlWG.Add(1)
 		go func(pWriter *ProgressWriter) {
-			defer func() { <-dlSem }()
+			defer func() { <-dlSem }() // Release semaphore slot when done
 			downloadFile(pWriter, &dlWG, downloadDir, manager)
 		}(pw)
 	}
-	dlWG.Wait()
+	dlWG.Wait() // Wait for all download goroutines to complete
 	appLogger.Println("All downloads processed.")
 
 	if manager != nil {
-		manager.Stop()
+		manager.Stop() // Stop the progress manager's redraw loop and clean up
 	}
 	fmt.Fprintf(os.Stderr, "All %d download tasks have been processed.\n", len(finalDownloadItems))
+	// Implicit os.Exit(0) at the end of main if no errors caused earlier exit.
 }
