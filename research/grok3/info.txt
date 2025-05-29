@@ -1,2 +1,0 @@
-after 3 prompts no working code
-completely ignored 10 diff code instructions

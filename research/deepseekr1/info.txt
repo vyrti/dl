@@ -1,2 +1,0 @@
-dl.deepseek.r1.go written by model using 2 iteractions using same model
-completely ignored 10 diff code instructions, but output working code

@@ -1,2 +1,0 @@
-4 prompts to fully working application
-more functions than in main repo application
