@@ -1,4 +1,3 @@
-openai canvas webui 05.2025
 promtp:
 write app in go lang that will download all file from text file,
 text file must be specified using -f, also add concurrency option -c,

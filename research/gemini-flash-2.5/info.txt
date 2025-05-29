@@ -1,4 +1,4 @@
 gave 10 diff code options
-on second promt selected variant 3
-no working code after 5 correcting promts (progress bar is creating new lines in terminal, now inplace update)
-but provided all command options from prompt
+second promt selected variant 3
+no working code after 5 correcting promts 
+(progress bar is creating new lines in terminal, no inplace update)

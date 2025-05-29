@@ -1,7 +1,0 @@
-qwen3 32b
-promtp:
-write app in go lang that will download all file from text file,
-text file must be specified using -f, also add concurrency option -c,
-terminal must show progress bar, speed, and ETA, think twice and recheck the answer,
-give 10 different code output that will perform this task,
-try to use external dependency as less as possible
