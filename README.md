@@ -5,14 +5,16 @@ Please be aware of potential legal risks associated with using AI-generated code
 
 # DL
 
-DL is a command-line tool written in Go for downloading multiple files concurrently from a list of URLs or a Hugging Face repository. Features a dynamic progress bar display for each download, showing speed, percentage, and downloaded/total size.
+DL is a command-line tool written in Go for downloading multiple files concurrently from a list of URLs or a Hugging Face repository. It features a dynamic progress bar display for each download, showing speed, percentage, and downloaded/total size. The tool supports advanced Hugging Face repository handling, including selection of specific `.gguf` files or series.
 
 ![Screenshot of DL tool](image.png)
+
 
 ### Features
 
 *   **Concurrent Downloads:** Downloads multiple files at the same time, configurable via the `-c` flag, with different caps for file list vs. Hugging Face downloads.
 *   **Multiple Input Sources:** Supports downloading from a list of URLs in a text file (`-f`) or automatically fetching all files from a specified Hugging Face repository (`-hf`).
+*   **Hugging Face GGUF Selection:** With the `-select` flag, you can interactively select a specific `.gguf` file or a multi-part GGUF series to download from Hugging Face repositories that primarily contain GGUF files.
 *   **Dynamic Progress Bars:** Displays a dynamic progress bar for each active download, including:
     *   Filename (truncated for display if too long).
     *   Visual progress bar.
@@ -23,9 +25,9 @@ DL is a command-line tool written in Go for downloading multiple files concurren
     *   Handles indeterminate progress (when total file size is unknown) with a spinner.
     *   Overall progress summary.
 *   **Pre-scanning:** Performs a quick HEAD request for each URL to attempt to determine file size before starting the download.
-*   **Organized Output:** Saves downloaded files into a `downloads/` subdirectory. When downloading from a Hugging Face repository, files are saved into a subdirectory named after the repository (e.g., `downloads/owner_repo`).
+*   **Organized Output:** Saves downloaded files into a `downloads/` subdirectory. When downloading from a Hugging Face repository, files are saved into a subdirectory named after the repository (e.g., `downloads/owner_repo`). For Hugging Face, subdirectories within the repo are preserved.
 *   **Error Handling:** Reports common download errors (HTTP issues, file creation problems) directly in the progress display.
-*   **Filename Derivation:** Attempts to derive a sensible filename from the URL. Handles common patterns like `?download=true` suffixes and generates unique names if necessary.
+*   **Filename Derivation:** Attempts to derive a sensible filename from the URL or Hugging Face metadata. Handles common patterns like `?download=true` suffixes and generates unique names if necessary. For Hugging Face, original repo paths are preserved.
 *   **Clean UI:** Uses ANSI escape codes to update progress bars in place, providing a clean terminal interface.
 *   **Debug Logging:** Optional debug logging to `log.log` via the `-debug` flag.
 *   **Cross-Platform:** Works on Windows, macOS, and Linux.
@@ -37,6 +39,7 @@ Note: You must provide either the `-f` flag or the `-hf` flag, but not both.
 *   `-c <concurrency_level>`: (Optional) Sets the number of concurrent downloads. Defaults to `3`. When using `-hf`, concurrency is capped at 4. When using `-f`, concurrency is capped at 100.
 *   `-f <path_to_urls_file>`: (Required if `-hf` is not used) The path to a text file containing URLs, one per line.
 *   `-hf <repo_input>`: (Required if `-f` is not used) The Hugging Face repository ID (e.g., `owner/repo_name`) or a full `https://huggingface.co/owner/repo_name` URL. Downloads all files from the main branch of the specified repository.
+*   `-select`: (Optional, Hugging Face only) If the repository contains mostly `.gguf` files, allows you to interactively select a specific GGUF file or series to download.
 *   `-debug`: (Optional) Enables debug logging to `log.log`.
 
 ## License

@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp" // For GGUF series parsing
-	"sort"   // For sorting displayable items
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,12 +36,11 @@ type GGUFSeriesInfo struct {
 }
 
 type SelectableGGUFItem struct {
-	DisplayName     string   // e.g., "Series: BF16/model (30 parts)" or "File: standalone.gguf"
+	DisplayName     string   // e.g., "Series: BF16/model (30 parts, 12.34 GB)" or "File: standalone.gguf, 0.01 GB"
 	FilesToDownload []HFFile // All HFFile objects for this selection
 }
 
 // Regex to capture GGUF series: (base_name)-(part_num)-of-(total_parts).gguf
-// Base_name can include paths and hyphens.
 var ggufSeriesRegex = regexp.MustCompile(`^(.*?)-(\d{5})-of-(\d{5})\.gguf$`)
 
 // --- Main Application ---
@@ -72,6 +71,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Apply concurrency caps
+	// ... (concurrency logic remains the same) ...
 	if hfRepoInput != "" {
 		maxHfConcurrency := 4
 		if concurrency <= 0 {
@@ -105,6 +106,8 @@ func main() {
 	var finalDownloadItems []DownloadItem
 	fmt.Fprintln(os.Stderr, "[INFO] Initializing downloader...")
 
+	var hfFileSizes map[string]int64 // map URL to size, populated by early pre-scan if needed
+
 	if hfRepoInput != "" {
 		fmt.Fprintf(os.Stderr, "[INFO] Preparing to fetch from Hugging Face repository: %s\n", hfRepoInput)
 		allRepoFiles, err := fetchHuggingFaceURLs(hfRepoInput)
@@ -124,30 +127,82 @@ func main() {
 
 		if selectFile {
 			ggufCount := 0
+			var ggufFilesInRepo []HFFile
 			for _, hfFile := range allRepoFiles {
 				if strings.HasSuffix(strings.ToLower(hfFile.Filename), ".gguf") {
 					ggufCount++
+					ggufFilesInRepo = append(ggufFilesInRepo, hfFile)
 				}
 			}
 
-			// Condition for "mainly .gguf": at least one .gguf file, and .gguf files constitute >= 40% of all files.
 			isMainlyGGUF := ggufCount > 0 && (float64(ggufCount)/float64(len(allRepoFiles))) >= 0.40
 
 			if isMainlyGGUF {
 				appLogger.Printf("[Main] Repo is mainly .gguf (count: %d/%d). -select processing.", ggufCount, len(allRepoFiles))
+				hfFileSizes = make(map[string]int64) // Initialize map for storing sizes
+
+				// ---- START: Early Pre-scan for HF GGUF selection display ----
+				if len(ggufFilesInRepo) > 0 {
+					fmt.Fprintf(os.Stderr, "[INFO] Scanning %d GGUF file sizes for selection display (this may take a moment)...\n", len(ggufFilesInRepo))
+					appLogger.Printf("[Main] Early scanning %d GGUF files for size.", len(ggufFilesInRepo))
+
+					type EarlyScanResult struct {
+						URL  string
+						Size int64
+					}
+					earlyScanResults := make([]EarlyScanResult, len(ggufFilesInRepo))
+					var earlyPreScanWG sync.WaitGroup
+					earlyPreScanSem := make(chan struct{}, 20) // Concurrency for this early scan
+
+					for i, hfFileToScan := range ggufFilesInRepo {
+						earlyPreScanWG.Add(1)
+						earlyPreScanSem <- struct{}{}
+						go func(idx int, fileToScan HFFile) {
+							defer func() {
+								<-earlyPreScanSem
+								earlyPreScanWG.Done()
+							}()
+							var size int64 = -1
+							headReq, _ := http.NewRequest("HEAD", fileToScan.URL, nil)
+							headReq.Header.Set("User-Agent", "Go-File-Downloader/1.1 (EarlyPreScan-HEAD)")
+							headClient := http.Client{Timeout: 10 * time.Second}
+							headResp, headErr := headClient.Do(headReq)
+							if headErr == nil && headResp.StatusCode == http.StatusOK {
+								size = headResp.ContentLength
+								if headResp.Body != nil {
+									headResp.Body.Close()
+								}
+							} else {
+								statusStr := "N/A"
+								if headResp != nil {
+									statusStr = headResp.Status
+								}
+								appLogger.Printf("[EarlyPreScan:%s] HEAD failed for '%s'. Error: %v, Status: %s", fileToScan.URL, fileToScan.Filename, headErr, statusStr)
+							}
+							earlyScanResults[idx] = EarlyScanResult{URL: fileToScan.URL, Size: size}
+						}(i, hfFileToScan)
+					}
+					earlyPreScanWG.Wait() // Wait for all early scans to complete
+
+					for _, res := range earlyScanResults {
+						if res.URL != "" { // Check if it was populated
+							hfFileSizes[res.URL] = res.Size
+						}
+					}
+					appLogger.Println("[Main] Early GGUF size scan complete.")
+					fmt.Fprintln(os.Stderr, "[INFO] GGUF size scan complete.")
+				}
+				// ---- END: Early Pre-scan ----
+
 				seriesMap := make(map[string]*GGUFSeriesInfo)
 				var standaloneGGUFs []HFFile
 
-				for _, hfFile := range allRepoFiles {
-					if !strings.HasSuffix(strings.ToLower(hfFile.Filename), ".gguf") {
-						continue // Only consider GGUF files for selection logic
-					}
-					// hfFile.Filename can be "path/to/model-00001-of-00010.gguf"
+				for _, hfFile := range ggufFilesInRepo { // Process only GGUF files for series/standalone logic
 					matches := ggufSeriesRegex.FindStringSubmatch(hfFile.Filename)
 					if matches != nil {
-						baseName := matches[1]      // e.g., "path/to/model"
-						partNumStr := matches[2]    // e.g., "00001"
-						totalPartsStr := matches[3] // e.g., "00010"
+						baseName := matches[1]
+						partNumStr := matches[2]
+						totalPartsStr := matches[3]
 						partNum, pErr := strconv.Atoi(partNumStr)
 						totalPartsVal, tErr := strconv.Atoi(totalPartsStr)
 
@@ -156,12 +211,10 @@ func main() {
 							standaloneGGUFs = append(standaloneGGUFs, hfFile)
 							continue
 						}
-
-						seriesKey := fmt.Sprintf("%s-of-%s", baseName, totalPartsStr) // Unique key for this series
-
+						seriesKey := fmt.Sprintf("%s-of-%s", baseName, totalPartsStr)
 						if _, exists := seriesMap[seriesKey]; !exists {
 							seriesMap[seriesKey] = &GGUFSeriesInfo{
-								BaseName:      baseName, // This includes the path part from Rfilename
+								BaseName:      baseName,
 								TotalParts:    totalPartsVal,
 								SeriesKey:     seriesKey,
 								FilesWithPart: []GGUFFileWithPartNum{},
@@ -173,7 +226,6 @@ func main() {
 					}
 				}
 
-				// Sort files within each series by part number
 				for _, seriesInfo := range seriesMap {
 					sort.Slice(seriesInfo.FilesWithPart, func(i, j int) bool {
 						return seriesInfo.FilesWithPart[i].PartNum < seriesInfo.FilesWithPart[j].PartNum
@@ -181,8 +233,6 @@ func main() {
 				}
 
 				var displayableItems []SelectableGGUFItem
-
-				// Add series to displayableItems, sorted by series key for consistent order
 				sortedSeriesKeys := make([]string, 0, len(seriesMap))
 				for k := range seriesMap {
 					sortedSeriesKeys = append(sortedSeriesKeys, k)
@@ -191,27 +241,44 @@ func main() {
 
 				for _, seriesKey := range sortedSeriesKeys {
 					seriesInfo := seriesMap[seriesKey]
-					if len(seriesInfo.FilesWithPart) == 0 { // Should not happen if map entry was created
+					if len(seriesInfo.FilesWithPart) == 0 {
 						continue
 					}
 					filesInSeries := make([]HFFile, len(seriesInfo.FilesWithPart))
+					var totalSeriesSizeBytes int64 = 0
+					allSizesKnownInSeries := true
 					for i, fwp := range seriesInfo.FilesWithPart {
 						filesInSeries[i] = fwp.File
+						size, ok := hfFileSizes[fwp.File.URL]
+						if ok && size > -1 {
+							totalSeriesSizeBytes += size
+						} else {
+							allSizesKnownInSeries = false // Mark if any file size is unknown
+						}
 					}
-					// Display name shows base name (which includes path) and example of first file's base name
-					displayName := fmt.Sprintf("Series: %s (%d parts, e.g., %s)", seriesInfo.BaseName, seriesInfo.TotalParts, filepath.Base(seriesInfo.FilesWithPart[0].File.Filename))
+
+					sizeStr := ", size unknown"
+					if allSizesKnownInSeries {
+						sizeGB := float64(totalSeriesSizeBytes) / (1024 * 1024 * 1024)
+						sizeStr = fmt.Sprintf(", %.2f GB", sizeGB)
+					}
+
+					displayName := fmt.Sprintf("Series: %s (%d parts%s, e.g., %s)", seriesInfo.BaseName, seriesInfo.TotalParts, sizeStr, filepath.Base(seriesInfo.FilesWithPart[0].File.Filename))
 					displayableItems = append(displayableItems, SelectableGGUFItem{
 						DisplayName:     displayName,
 						FilesToDownload: filesInSeries,
 					})
 				}
 
-				// Add standalone GGUFs, sorted by filename
-				sort.Slice(standaloneGGUFs, func(i, j int) bool {
-					return standaloneGGUFs[i].Filename < standaloneGGUFs[j].Filename
-				})
+				sort.Slice(standaloneGGUFs, func(i, j int) bool { return standaloneGGUFs[i].Filename < standaloneGGUFs[j].Filename })
 				for _, hfFile := range standaloneGGUFs {
-					displayName := fmt.Sprintf("File: %s", hfFile.Filename) // Full path as in repo
+					size, ok := hfFileSizes[hfFile.URL]
+					sizeStr := ", size unknown"
+					if ok && size > -1 {
+						sizeGB := float64(size) / (1024 * 1024 * 1024)
+						sizeStr = fmt.Sprintf(", %.2f GB", sizeGB)
+					}
+					displayName := fmt.Sprintf("File: %s%s", hfFile.Filename, sizeStr)
 					displayableItems = append(displayableItems, SelectableGGUFItem{
 						DisplayName:     displayName,
 						FilesToDownload: []HFFile{hfFile},
@@ -221,7 +288,7 @@ func main() {
 				if len(displayableItems) == 0 {
 					fmt.Fprintf(os.Stderr, "[INFO] No .gguf files or series found for selection, despite repo being mainly GGUF. Downloading all %d files.\n", len(allRepoFiles))
 					appLogger.Println("[Main] No displayable GGUF items, downloading all files.")
-					// selectedHfFiles remains allRepoFiles by default
+					selectedHfFiles = allRepoFiles // already the default
 				} else if len(displayableItems) == 1 {
 					selectedHfFiles = displayableItems[0].FilesToDownload
 					fmt.Fprintf(os.Stderr, "[INFO] Auto-selecting the only available GGUF item: %s (%d file(s))\n", displayableItems[0].DisplayName, len(selectedHfFiles))
@@ -252,19 +319,16 @@ func main() {
 					appLogger.Printf("[Main] User selected item %d: %s, %d files", selectedIndex, displayableItems[selectedIndex-1].DisplayName, len(selectedHfFiles))
 					fmt.Fprintf(os.Stderr, "[INFO] Selected for download: %s (%d file(s))\n", displayableItems[selectedIndex-1].DisplayName, len(selectedHfFiles))
 				}
-			} else if ggufCount > 0 { // -select was true, but not mainly GGUF (but some GGUFs exist)
+			} else if ggufCount > 0 {
 				fmt.Fprintf(os.Stderr, "[INFO] -select flag was provided, but the repository is not detected as mainly .gguf files (GGUF files: %d of %d total). Proceeding with all %d files from repository.\n", ggufCount, len(allRepoFiles), len(allRepoFiles))
 				appLogger.Printf("[Main] -select active, but not mainly .gguf (gguf: %d, total: %d). All %d files will be downloaded.", ggufCount, len(allRepoFiles), len(allRepoFiles))
-				// selectedHfFiles remains allRepoFiles by default
-			} else { // -select was true, but no GGUF files found at all
+			} else {
 				fmt.Fprintf(os.Stderr, "[INFO] -select flag was provided, but no .gguf files were found in the repository. Proceeding with all %d files from repository.\n", len(allRepoFiles))
 				appLogger.Printf("[Main] -select active, but no .gguf files found. All %d files will be downloaded.", len(allRepoFiles))
-				// selectedHfFiles remains allRepoFiles by default
 			}
 		} // End of if selectFile
 
 		for _, hfFile := range selectedHfFiles {
-			// hfFile.Filename here can be "subdir/file.gguf" or just "file.gguf"
 			finalDownloadItems = append(finalDownloadItems, DownloadItem{URL: hfFile.URL, PreferredFilename: hfFile.Filename})
 		}
 
@@ -303,9 +367,9 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Determine base download directory
 	downloadDir := "downloads"
 	if hfRepoInput != "" {
+		// ... (downloadDir logic for HF remains the same) ...
 		var repoOwner, repoName string
 		tempRepoID := hfRepoInput
 		if strings.HasPrefix(hfRepoInput, "http") {
@@ -329,11 +393,9 @@ func main() {
 		} else {
 			appLogger.Printf("[Main] Could not determine owner/repo from HF input '%s' for subdir creation, using base '%s'", hfRepoInput, downloadDir)
 		}
+
 	}
-	// Base directory structure (e.g., "downloads" or "downloads/owner_repo")
-	// Individual file subdirectories (like "BF16/") will be handled by generateActualFilename and mkdirAll in downloadFile
-	// Ensure the top-level 'downloads' dir exists if it's the root for file list downloads
-	if urlsFilePath != "" { // For -f, downloadDir is just "downloads"
+	if urlsFilePath != "" {
 		if _, statErr := os.Stat(downloadDir); os.IsNotExist(statErr) {
 			appLogger.Printf("Creating base download dir for file list: %s", downloadDir)
 			if mkDirErr := os.MkdirAll(downloadDir, 0755); mkDirErr != nil {
@@ -343,17 +405,16 @@ func main() {
 			}
 		}
 	}
-	// For -hf, downloadDir (e.g. "downloads/owner_repo") will be created by MkdirAll in downloadFile if needed.
 
 	manager := NewProgressManager(concurrency)
 	fmt.Fprintf(os.Stderr, "[INFO] Pre-scanning %d file(s) for sizes (this may take a moment)...\n", len(finalDownloadItems))
 	if len(finalDownloadItems) > 0 {
-		manager.performActualDraw(false) // Initial draw before pre-scan starts
+		manager.performActualDraw(false)
 	}
 
 	allPWs := make([]*ProgressWriter, len(finalDownloadItems))
 	var preScanWG sync.WaitGroup
-	preScanSem := make(chan struct{}, 20) // Prescan concurrency
+	preScanSem := make(chan struct{}, 20)
 	for i, item := range finalDownloadItems {
 		preScanWG.Add(1)
 		preScanSem <- struct{}{}
@@ -362,30 +423,44 @@ func main() {
 				<-preScanSem
 				preScanWG.Done()
 			}()
-			// dItem.PreferredFilename can be "subdir/file.gguf" or ""
-			// generateActualFilename will handle this, potentially preserving subdirs relative to downloadDir
 			actualFile := generateActualFilename(dItem.URL, dItem.PreferredFilename)
 			var initialSize int64 = -1
-			headReq, _ := http.NewRequest("HEAD", dItem.URL, nil)
-			headReq.Header.Set("User-Agent", "Go-File-Downloader/1.1 (PreScan-HEAD)")
-			headClient := http.Client{Timeout: 10 * time.Second}
-			headResp, headErr := headClient.Do(headReq)
-			if headErr == nil && headResp.StatusCode == http.StatusOK {
-				initialSize = headResp.ContentLength
-				if headResp.Body != nil {
-					headResp.Body.Close()
+
+			if hfFileSizes != nil { // Check if early scan map was populated
+				if size, ok := hfFileSizes[dItem.URL]; ok {
+					initialSize = size
+					if size > -1 { // Only log if a valid size was found
+						appLogger.Printf("[PreScan:%s] Using early pre-scanned size: %d for '%s'", dItem.URL, initialSize, actualFile)
+					} else {
+						appLogger.Printf("[PreScan:%s] Early pre-scan for '%s' yielded unknown size, will attempt HEAD.", dItem.URL, actualFile)
+					}
 				}
-				appLogger.Printf("[PreScan:%s] HEAD success. Size: %d for '%s'", dItem.URL, initialSize, actualFile)
-			} else {
-				if headErr != nil {
-					appLogger.Printf("[PreScan:%s] HEAD error: %v for '%s'. Size unknown.", dItem.URL, headErr, actualFile)
-				} else if headResp != nil {
-					appLogger.Printf("[PreScan:%s] HEAD non-OK status: %s for '%s'. Size unknown.", dItem.URL, headResp.Status, actualFile)
+			}
+
+			if initialSize == -1 { // Size not pre-fetched or pre-fetch failed/returned -1
+				headReq, _ := http.NewRequest("HEAD", dItem.URL, nil)
+				headReq.Header.Set("User-Agent", "Go-File-Downloader/1.1 (PreScan-HEAD)")
+				headClient := http.Client{Timeout: 10 * time.Second}
+				headResp, headErr := headClient.Do(headReq)
+				if headErr == nil && headResp.StatusCode == http.StatusOK {
+					initialSize = headResp.ContentLength
 					if headResp.Body != nil {
 						headResp.Body.Close()
 					}
+					appLogger.Printf("[PreScan:%s] HEAD success. Size: %d for '%s'", dItem.URL, initialSize, actualFile)
 				} else {
-					appLogger.Printf("[PreScan:%s] HEAD error (no response, no error reported): for '%s'. Size unknown.", dItem.URL, actualFile)
+					statusStr := "N/A"
+					if headResp != nil {
+						statusStr = headResp.Status
+					}
+					if headErr != nil {
+						appLogger.Printf("[PreScan:%s] HEAD error for '%s': %v. Size unknown.", dItem.URL, actualFile, headErr)
+					} else { // headErr is nil, but status not OK
+						appLogger.Printf("[PreScan:%s] HEAD non-OK status for '%s': %s. Size unknown.", dItem.URL, actualFile, statusStr)
+					}
+					if headResp != nil && headResp.Body != nil {
+						headResp.Body.Close()
+					}
 				}
 			}
 			allPWs[idx] = newProgressWriter(idx, dItem.URL, actualFile, initialSize, manager)
@@ -401,13 +476,13 @@ func main() {
 	fmt.Fprintf(os.Stderr, "[INFO] Starting downloads for %d file(s) to '%s' (concurrency: %d).\n", len(finalDownloadItems), downloadDir, concurrency)
 
 	var dlWG sync.WaitGroup
-	dlSem := make(chan struct{}, concurrency) // Download concurrency
+	dlSem := make(chan struct{}, concurrency)
 	for _, pw := range allPWs {
-		dlSem <- struct{}{} // Acquire a slot
+		dlSem <- struct{}{}
 		dlWG.Add(1)
 		go func(pWriter *ProgressWriter) {
-			defer func() { <-dlSem }()                         // Release slot when done
-			downloadFile(pWriter, &dlWG, downloadDir, manager) // downloadDir is the base path
+			defer func() { <-dlSem }()
+			downloadFile(pWriter, &dlWG, downloadDir, manager)
 		}(pw)
 	}
 	dlWG.Wait()
