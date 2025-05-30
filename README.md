@@ -11,58 +11,155 @@ Auto-update is available with -update.
 
 ![Screenshot of DL tool](image.png)
 
+
 ## Quick Start
 
-1. **Build the tool:**
+1. **Build the tool for all major platforms:**
     ```bash
-    build.sh
+    ./build.sh
     ```
+    Binaries will be placed in the `build/` directory for macOS (Intel/ARM), Windows (x64/ARM), and Linux (x64/ARM).
+
 2. **Download from a URL list:**
     ```bash
     ./dl -f ../download_links.txt -c 4
     ```
+
 3. **Download from a Hugging Face repo:**
     ```bash
     ./dl -hf "Qwen/Qwen3-30B-A3B"
     ```
+
 4. **Select a GGUF file/series from a Hugging Face repo:**
     ```bash
-    ./dl -hf "unsloth/DeepSeek-R1-0528-GGUF"" -select
+    ./dl -hf "unsloth/DeepSeek-R1-0528-GGUF" -select
     ```
+
+5. **Download a pre-defined model by alias:**
+    ```bash
+    ./dl -m qwen3-0.6b
+    ```
+
+6. **Search for models on Hugging Face:**
+    ```bash
+    ./dl model search llama 7b gguf
+    ```
+
+7. **Install, update, or remove llama.cpp binaries:**
+    ```bash
+    ./dl install llama-mac-arm
+    ./dl update llama
+    ./dl remove llama-win-cuda
+    ```
+
+8. **Show system hardware info:**
+    ```bash
+    ./dl -t
+    ```
+
+9. **Self-update the tool:**
+    ```bash
+    ./dl --update
+    ```
+
 
 ### Features
 
-*   **Concurrent Downloads:** Downloads multiple files at the same time, configurable via the `-c` flag, with different caps for file list vs. Hugging Face downloads.
-*   **Multiple Input Sources:** Supports downloading from a list of URLs in a text file (`-f`) or automatically fetching all files from a specified Hugging Face repository (`-hf`).
-*   **Hugging Face GGUF Selection:** With the `-select` flag (Hugging Face only), you can interactively select a specific `.gguf` file or a multi-part GGUF series to download from repositories that primarily contain GGUF files.
-*   **Dynamic Progress Bars:** Displays a dynamic progress bar for each active download, including:
-    *   Filename (truncated for display if too long).
-    *   Visual progress bar.
-    *   Percentage completion.
-    *   Downloaded size / Total size (in MB or GB).
-    *   Current download speed (B/s, KB/s, or MB/s).
-    *   Estimated Time of Arrival (ETA).
-    *   Handles indeterminate progress (when total file size is unknown) with a spinner.
-    *   Overall progress summary.
-*   **Pre-scanning:** Performs a quick HEAD request for each URL to attempt to determine file size before starting the download.
-*   **Organized Output:** Saves downloaded files into a `downloads/` subdirectory. When downloading from a Hugging Face repository, files are saved into a subdirectory named after the repository (e.g., `downloads/owner_repo`). For Hugging Face, subdirectories within the repo are preserved, so original folder structure is maintained.
-*   **Error Handling:** Reports common download errors (HTTP issues, file creation problems) directly in the progress display.
-*   **Filename Derivation:** Attempts to derive a sensible filename from the URL or Hugging Face metadata. Handles common patterns like `?download=true` suffixes and generates unique names if necessary. For Hugging Face, original repo paths are preserved.
-*   **Clean UI:** Uses ANSI escape codes to update progress bars in place, providing a clean terminal interface.
-*   **Debug Logging:** Optional debug logging to `log.log` via the `-debug` flag.
-*   **Cross-Platform:** Works on Windows, macOS, and Linux.
-
+*   **Concurrent Downloads:** Download multiple files at once, with concurrency caps for file lists and Hugging Face downloads.
+*   **Multiple Input Sources:** Download from a URL list (`-f`), Hugging Face repo (`-hf`), or direct URLs.
+*   **Model Registry:** Use `-m <alias>` to download popular models by shortcut (see below).
+*   **Model Search:** Search Hugging Face models from the command line.
+*   **Llama.cpp App Management:** Install, update, or remove pre-built llama.cpp binaries for your platform.
+*   **Hugging Face GGUF Selection:** Use `-select` to interactively choose `.gguf` files or series from Hugging Face repos.
+*   **Dynamic Progress Bars:** Per-download progress bars with speed, ETA, and more.
+*   **Pre-scanning:** HEAD requests to determine file size before download.
+*   **Organized Output:** Downloads go to `downloads/`, with subfolders for Hugging Face repos and models.
+*   **Error Handling:** Clear error messages and robust handling of download issues.
+*   **Filename Derivation:** Smart filename handling for URLs and Hugging Face files.
+*   **Clean UI:** ANSI escape codes for a tidy terminal interface.
+*   **Debug Logging:** Enable with `-debug` (logs to `log.log`).
+*   **System Info:** Show hardware info with `-t`.
+*   **Self-Update:** Update the tool with `--update`.
+*   **Cross-Platform:** Windows, macOS, and Linux supported.
 
 ### Command-Line Arguments
 
-> **Note:** You must provide either the `-f` flag or the `-hf` flag, but not both.
+> **Note:** You must provide only one of the following: `-f`, `-hf`, `-m`, or direct URLs.
 
-*   `-c <concurrency_level>`: (Optional) Sets the number of concurrent downloads. Defaults to `3`. When using `-hf`, concurrency is capped at 4. When using `-f`, concurrency is capped at 100.
-*   `-f <path_to_urls_file>`: (Required if `-hf` is not used) The path to a text file containing URLs, one per line.
-*   `-hf <repo_input>`: (Required if `-f` is not used) The Hugging Face repository ID (e.g., `owner/repo_name`) or a full `https://huggingface.co/owner/repo_name` URL. Downloads all files from the main branch of the specified repository.
-*   `-select`: (Optional, Hugging Face only) If the repository contains mostly `.gguf` files, allows you to interactively select a specific GGUF file or series to download.
-*   `-debug`: (Optional) Enables debug logging to `log.log`.
-*   `-update`: (Optional) Updates to latest version.
+*   `-c <concurrency_level>`: (Optional) Number of concurrent downloads. Defaults to `3`. Capped at 4 for Hugging Face, 100 for file lists.
+*   `-f <path_to_urls_file>`: Download from a text file of URLs (one per line).
+*   `-hf <repo_input>`: Download all files from a Hugging Face repo (`owner/repo_name` or full URL).
+*   `-m <model_alias>`: Download a pre-defined model by alias (see Model Registry below).
+*   `-select`: (Hugging Face only) Interactively select `.gguf` files or series.
+*   `-debug`: Enable debug logging to `log.log`.
+*   `--update`: Self-update the tool.
+*   `-t`: Show system hardware info.
+*   `install <app_name>`: Install a pre-built llama.cpp binary (see below).
+*   `update <app_name>`: Update a llama.cpp binary.
+*   `remove <app_name>`: Remove a llama.cpp binary.
+*   `model search <query>`: Search Hugging Face models from the command line.
+
+---
+
+## Model Registry
+
+You can use the `-m` flag with the following aliases to quickly download popular models:
+
+qwen3-4b, qwen3-8b, qwen3-14b, qwen3-32b, qwen3-30b-moe, gemma3-27b
+
+---
+
+## Model Search
+
+Search for models on Hugging Face directly from the command line:
+
+```bash
+./dl model search llama 7b gguf
+```
+
+---
+
+## Llama.cpp App Management
+
+Install, update, or remove official pre-built llama.cpp binaries for your platform from github:
+
+```bash
+./dl install llama-mac-arm
+./dl update llama
+./dl remove llama-win-cuda
+```
+
+---
+
+## System Info
+
+Show system hardware information:
+
+```bash
+./dl -t
+```
+
+---
+
+## Self-Update
+
+Update the tool to the latest version:
+
+```bash
+./dl --update
+```
+
+---
+
+## Build
+
+To build the tool for all supported platforms, run:
+
+```bash
+./build.sh
+```
+
+This will produce binaries for macOS (Intel/ARM), Windows (x64/ARM), and Linux (x64/ARM) in the `build/` directory.
 
 ---
 
