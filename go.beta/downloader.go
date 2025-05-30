@@ -719,7 +719,7 @@ func (m *ProgressManager) Stop() {
 }
 
 // --- Downloader Function ---
-func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, manager *ProgressManager) {
+func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, manager *ProgressManager, hfToken string) {
 	logPrefix := fmt.Sprintf("[downloadFile:%s]", pw.URL)
 	appLogger.Printf("%s Download initiated for URL (File: %s).", logPrefix, pw.ActualFileName)
 	defer func() {
@@ -741,7 +741,7 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	}
 
 	client := http.Client{
-		Timeout: 60 * time.Minute,
+		Timeout: 60 * time.Minute, // Consider making this configurable or longer for large files
 	}
 	req, err := http.NewRequest("GET", pw.URL, nil)
 	if err != nil {
@@ -749,6 +749,12 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 		return
 	}
 	req.Header.Set("User-Agent", "Go-File-Downloader/1.1")
+
+	// Add Hugging Face token if provided and it's an HF URL
+	if hfToken != "" && strings.Contains(pw.URL, "huggingface.co") {
+		req.Header.Set("Authorization", "Bearer "+hfToken)
+		appLogger.Printf("%s Using Hugging Face token for download request.", logPrefix)
+	}
 
 	resp, getErr := client.Do(req)
 	if getErr != nil {
@@ -758,7 +764,22 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		pw.MarkFinished(fmt.Sprintf("HTTP %s", resp.Status))
+		// Attempt to read a snippet of the body for error messages from HF (e.g. for gated repos)
+		errorBodySnippet := ""
+		if resp.ContentLength > 0 && resp.ContentLength < 1024 { // Only read small error bodies
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr == nil {
+				errorBodySnippet = strings.TrimSpace(string(bodyBytes))
+				if len(errorBodySnippet) > 100 { // Keep it short
+					errorBodySnippet = errorBodySnippet[:100] + "..."
+				}
+			}
+		}
+		if errorBodySnippet != "" {
+			pw.MarkFinished(fmt.Sprintf("HTTP %s (%s)", resp.Status, errorBodySnippet))
+		} else {
+			pw.MarkFinished(fmt.Sprintf("HTTP %s", resp.Status))
+		}
 		return
 	}
 	appLogger.Printf("%s HTTP GET successful. ContentLength: %d", logPrefix, resp.ContentLength)
@@ -789,12 +810,14 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 		pw.mu.Unlock()
 
 		if alreadyDone && (copyErr == io.EOF || strings.Contains(copyErr.Error(), "EOF")) {
+			// If already marked as finished (e.g. by a concurrent issue or manual stop),
+			// and error is EOF, it's likely okay or the original error was more specific.
 			appLogger.Printf("%s Copy interrupted, but already marked done. Error: %v", logPrefix, copyErr)
 		} else {
 			pw.MarkFinished(fmt.Sprintf("Copy: %v", shortenError(copyErr, 25)))
 		}
 	} else {
-		pw.MarkFinished("")
+		pw.MarkFinished("") // Success
 	}
 	appLogger.Printf("%s File copy process completed for '%s'. Final status IsFinished: %t, ErrorMsg: '%s'", logPrefix, filePath, pw.IsFinished, pw.ErrorMsg)
 }

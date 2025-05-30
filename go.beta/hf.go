@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io" // Added import for io.ReadAll
 	"net/http"
 	"net/url"
 	"os"
@@ -27,7 +28,7 @@ type Sibling struct {
 }
 
 // --- Hugging Face URL Fetching Logic ---
-func fetchHuggingFaceURLs(repoInput string) ([]HFFile, error) {
+func fetchHuggingFaceURLs(repoInput string, hfToken string) ([]HFFile, error) {
 	appLogger.Printf("[HF] Processing Hugging Face repository input: %s", repoInput)
 
 	var repoID string
@@ -66,13 +67,31 @@ func fetchHuggingFaceURLs(repoInput string) ([]HFFile, error) {
 	appLogger.Printf("[HF] Using API endpoint for repo files: %s", apiURL)
 
 	httpClient := http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Get(apiURL)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating request for API '%s': %w", apiURL, err)
+	}
+
+	if hfToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hfToken)
+		appLogger.Printf("[HF] Using Hugging Face token for API request to %s", apiURL)
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching data from API '%s': %w", apiURL, err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed with status %s for URL %s", resp.Status, apiURL)
+		// Try to read body for more error info from HF API
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		var errorDetail string
+		if readErr == nil && len(bodyBytes) > 0 {
+			errorDetail = string(bodyBytes)
+			appLogger.Printf("[HF] API error response body: %s", errorDetail)
+		}
+		return nil, fmt.Errorf("API request to %s failed with status %s. Detail: %s", apiURL, resp.Status, errorDetail)
 	}
 
 	var repoData RepoInfo
@@ -82,7 +101,7 @@ func fetchHuggingFaceURLs(repoInput string) ([]HFFile, error) {
 
 	if len(repoData.Siblings) == 0 {
 		appLogger.Printf("[HF] No files found in repository %s via API.", repoID)
-		fmt.Fprintf(os.Stderr, "[INFO] No files found in repository %s. The API might have changed or the repo is empty/private.\n", repoID)
+		fmt.Fprintf(os.Stderr, "[INFO] No files found in repository %s. The API might have changed, the repo is empty, or access is restricted (check --token and HF_TOKEN for private/gated repos).\n", repoID)
 		return []HFFile{}, nil
 	}
 

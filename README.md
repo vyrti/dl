@@ -90,6 +90,7 @@ Auto-update is available with -update.
 *   `-f <path_to_urls_file>`: Download from a text file of URLs (one per line).
 *   `-hf <repo_input>`: Download all files from a Hugging Face repo (`owner/repo_name` or full URL).
 *   `-m <model_alias>`: Download a pre-defined model by alias (see Model Registry below).
+*   `--token`: Use the `HF_TOKEN` environment variable for Hugging Face API requests and downloads. Necessary for gated or private repositories. The `HF_TOKEN` variable must be set in your environment.
 *   `-select`: (Hugging Face only) Interactively select `.gguf` files or series.
 *   `-debug`: Enable debug logging to `log.log`.
 *   `--update`: Self-update the tool.
@@ -97,7 +98,7 @@ Auto-update is available with -update.
 *   `install <app_name>`: Install a pre-built llama.cpp binary (see below).
 *   `update <app_name>`: Update a llama.cpp binary.
 *   `remove <app_name>`: Remove a llama.cpp binary.
-*   `model search <query>`: Search Hugging Face models from the command line.
+*   `model search <query>`: Search Hugging Face models from the command line. Can be used with `--token`.
 
 ---
 

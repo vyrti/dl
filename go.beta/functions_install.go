@@ -414,7 +414,8 @@ func downloadAndUnpackAsset(pm *ProgressManager, asset GHAsset, appName string, 
 	// The downloadFile function from downloader.go expects a base downloadDir
 	// and the pw.ActualFileName is relative to that.
 	// Here, we want to download to appPath/asset.Name
-	go downloadFile(pw, &downloadWG, appPath, pm)
+	// Since these are GitHub downloads, hfToken is not relevant, pass ""
+	go downloadFile(pw, &downloadWG, appPath, pm, "")
 	downloadWG.Wait()
 
 	if pw.ErrorMsg != "" {
