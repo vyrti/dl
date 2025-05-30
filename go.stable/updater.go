@@ -22,7 +22,7 @@ const (
 	// or for development builds:
 	// go build -ldflags="-X main.CurrentAppVersion=DEVELOPMENT"
 	// This allows checking if an update is actually newer.
-	CurrentAppVersion  = "v0.1.3"      // Default if not set by ldflags
+	CurrentAppVersion  = "v0.1.4"      // Default if not set by ldflags
 	DevelopmentVersion = "DEVELOPMENT" // Special string to indicate a development build
 )
 

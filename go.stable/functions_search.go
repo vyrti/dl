@@ -50,7 +50,7 @@ func formatNumber(n int) string {
 }
 
 // HandleModelSearch searches for models on Hugging Face and displays popular results.
-func HandleModelSearch(query string) {
+func HandleModelSearch(query string, hfToken string) {
 	appLogger.Printf("[ModelSearch] Initiating search for query: '%s'", query)
 	fmt.Fprintf(os.Stderr, "[INFO] Searching for models matching '%s' on Hugging Face...\n", query)
 
@@ -78,6 +78,11 @@ func HandleModelSearch(query string) {
 	req.Header.Set("User-Agent", "go-downloader-app/1.0 (model-search)") // Polite to set User-Agent
 	req.Header.Set("Accept", "application/json")
 
+	if hfToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hfToken)
+		appLogger.Printf("[ModelSearch] Using Hugging Face token for API request to %s", fullURL)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		appLogger.Printf("[ModelSearch] Error performing request: %v", err)
@@ -90,10 +95,12 @@ func HandleModelSearch(query string) {
 		appLogger.Printf("[ModelSearch] API request failed with status %s", resp.Status)
 		// Try to read body for more error info if possible
 		bodyBytes, readErr := io.ReadAll(resp.Body)
-		if readErr == nil {
-			appLogger.Printf("[ModelSearch] Response body: %s", string(bodyBytes))
+		var errorDetail string
+		if readErr == nil && len(bodyBytes) > 0 {
+			errorDetail = string(bodyBytes)
+			appLogger.Printf("[ModelSearch] API error response body: %s", errorDetail)
 		}
-		fmt.Fprintf(os.Stderr, "[ERROR] Hugging Face API request failed: %s\n", resp.Status)
+		fmt.Fprintf(os.Stderr, "[ERROR] Hugging Face API request failed: %s. Detail: %s\n", resp.Status, errorDetail)
 		return
 	}
 

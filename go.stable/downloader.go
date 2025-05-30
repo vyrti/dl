@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -250,7 +251,9 @@ func (pw *ProgressWriter) Write(p []byte) (int, error) {
 	}
 	pw.Current += int64(n)
 	pw.mu.Unlock()
-	pw.manager.requestRedraw()
+	if pw.manager != nil { // Manager could be nil if PW created before manager init (e.g. during early checks)
+		pw.manager.requestRedraw()
+	}
 	return n, nil
 }
 
@@ -289,7 +292,9 @@ func (pw *ProgressWriter) MarkFinished(errMsg string) {
 		pw.Total = pw.Current
 	}
 	pw.mu.Unlock()
-	pw.manager.requestRedraw() // Request a final redraw for this bar
+	if pw.manager != nil {
+		pw.manager.requestRedraw() // Request a final redraw for this bar
+	}
 }
 
 func (pw *ProgressWriter) getProgressString() string {
@@ -446,9 +451,18 @@ func (m *ProgressManager) redrawLoop() {
 		m.performActualDraw(true) // Final draw to show all completed/errored
 		stdoutMutex.Lock()
 		fmt.Print("\033[?25h") // Show cursor
-		fmt.Println()          // Ensure prompt is on a new line after final output and cursor restoration
+		// Ensure prompt is on a new line after final output and cursor restoration.
+		// Only add a newline if there was some output (i.e., if bars existed at some point).
+		// This check is a bit indirect; ideally, we'd know if `performActualDraw` actually drew something.
+		// For now, assume if manager was active, a newline is good.
+		m.mu.Lock()
+		needsNewline := len(m.bars) > 0 // Heuristic: if bars ever existed, manager was active.
+		m.mu.Unlock()
+		if needsNewline {
+			fmt.Println()
+		}
 		stdoutMutex.Unlock()
-		appLogger.Println("[PM.redrawLoop] Cursor restored, final draw performed.") // Log for confirmation
+		appLogger.Println("[PM.redrawLoop] Cursor restored, final draw performed.")
 	}()
 
 	for {
@@ -515,7 +529,7 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 
 		if !bar.IsFinished {
 			allDone = false
-			if bar.Current > 0 {
+			if bar.Current > 0 || bar.Total > 0 { // Count as active if it has total size, even if not started
 				overallSpeed += bar.currentSpeedBps
 				activeDownloads++
 			}
@@ -534,8 +548,10 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 		if percentage < 0 {
 			percentage = 0
 		}
-	} else if allDone && totalTasks > 0 {
+	} else if allDone && totalTasks > 0 { // All tasks finished, even if some had unknown total size initially
 		percentage = 100.0
+	} else if totalTasks == 0 { // No tasks
+		percentage = 0.0 // Or 100.0 if interpreted as "nothing to do, so 100% done"
 	}
 
 	useGB := false
@@ -552,8 +568,8 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 		currentStr = fmt.Sprintf("%.2f GB", float64(currentBytes)/(1024*1024*1024))
 		if expectedBytes > 0 {
 			expectedStr = fmt.Sprintf("%.2f GB", float64(expectedBytes)/(1024*1024*1024))
-		} else if allDone && totalTasks > 0 {
-			expectedStr = currentStr
+		} else if allDone && totalTasks > 0 { // All done, total might have been unknown
+			expectedStr = currentStr // Show current as total
 		} else {
 			expectedStr = "???.?? GB"
 		}
@@ -579,7 +595,12 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 		speedStr = "Completed "
 	} else if activeDownloads == 0 && !allDone && totalTasks > 0 {
 		speedStr = "Pending... "
-	} else if totalTasks == 0 && !allDone {
+	} else if totalTasks == 0 { // No tasks at all
+		speedStr = "Idle      "
+		etaStr = "---"
+		currentStr = "--- MB"
+		expectedStr = "--- MB"
+	} else if activeDownloads == 0 && !allDone { // Should be caught by Pending, but for safety
 		speedStr = "Initializing..."
 		etaStr = "---"
 	}
@@ -598,6 +619,9 @@ func (m *ProgressManager) getOverallProgressString(barsSnapshot []*ProgressWrite
 
 	overallBar := "[" + strings.Repeat("=", filledW) + strings.Repeat(" ", barW-filledW) + "]"
 	filesInfo := fmt.Sprintf("  (%d/%d files)", finishedTasks, totalTasks)
+	if totalTasks == 0 {
+		filesInfo = "  (0/0 files)"
+	}
 
 	if len(speedStr) < 10 {
 		speedStr = fmt.Sprintf("%-10s", speedStr)
@@ -613,6 +637,14 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 	copy(barsSnapshot, m.bars)
 	m.mu.Unlock()
 	appLogger.Printf("[PM.performActualDraw] Drawing %d bars. Final: %t. DisplayLimit: %d", len(barsSnapshot), isFinalDraw, m.displayConcurrency)
+
+	// If there are no bars and it's not a final draw, don't clear the screen or print anything.
+	// This prevents wiping pre-existing terminal output (like selection menus)
+	// if performActualDraw is called when no actual downloads are queued.
+	if len(barsSnapshot) == 0 && !isFinalDraw {
+		appLogger.Printf("[PM.performActualDraw] No bars to draw and not a final draw. Skipping UI draw.")
+		return // Do nothing, preserve current terminal output
+	}
 
 	if isFinalDraw {
 		for _, b := range barsSnapshot {
@@ -635,9 +667,12 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 	stdoutMutex.Lock()
 	defer stdoutMutex.Unlock()
 
+	// Clear screen and print headers ONLY if we are actually drawing something or it's a final cleanup.
 	fmt.Print("\033[H\033[2J")
-	fmt.Println("Download Progress:")
-	fmt.Println(strings.Repeat("-", 80))
+	if len(barsSnapshot) > 0 || isFinalDraw { // Only print header if there's content or it's the end
+		fmt.Println("Download Progress:")
+		fmt.Println(strings.Repeat("-", 80))
+	}
 
 	barsToDisplay := make([]*ProgressWriter, 0)
 	if isFinalDraw {
@@ -653,7 +688,7 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 			bar.mu.Unlock()
 
 			if !isFin {
-				if curr > 0 {
+				if curr > 0 { // Or if bar.Total > 0 (queued but not started)
 					active = append(active, bar)
 				} else {
 					pending = append(pending, bar)
@@ -662,7 +697,7 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 				finishedInSnapshot = append(finishedInSnapshot, bar)
 			}
 		}
-
+		// Prioritize active, then pending, then finished
 		for _, bar := range active {
 			if len(barsToDisplay) < m.displayConcurrency {
 				barsToDisplay = append(barsToDisplay, bar)
@@ -680,6 +715,11 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 			}
 		}
 		if len(barsToDisplay) < m.displayConcurrency {
+			// Show recently finished ones if space allows, sorted by ID perhaps or finish time (more complex)
+			// For now, just add them as they are.
+			sort.SliceStable(finishedInSnapshot, func(i, j int) bool { // Keep original order for finished
+				return finishedInSnapshot[i].id < finishedInSnapshot[j].id
+			})
 			for _, bar := range finishedInSnapshot {
 				if len(barsToDisplay) < m.displayConcurrency {
 					barsToDisplay = append(barsToDisplay, bar)
@@ -701,11 +741,9 @@ func (m *ProgressManager) performActualDraw(isFinalDraw bool) {
 		}
 	}
 
-	fmt.Println(strings.Repeat("-", 80))
-	if len(barsSnapshot) > 0 {
-		fmt.Println(m.getOverallProgressString(barsSnapshot))
-	} else {
-		fmt.Printf("Overall [Processing...........................]   ---.-%% (--- MB / --- MB) @ Initializing... ETA: ---\n  (0/? files)\n")
+	if len(barsSnapshot) > 0 || isFinalDraw { // Corresponding condition for footer
+		fmt.Println(strings.Repeat("-", 80))
+		fmt.Println(m.getOverallProgressString(barsSnapshot)) // getOverallProgressString handles len(barsSnapshot) == 0
 	}
 	os.Stdout.Sync()
 }
@@ -719,13 +757,13 @@ func (m *ProgressManager) Stop() {
 }
 
 // --- Downloader Function ---
-func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, manager *ProgressManager) {
+func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, manager *ProgressManager, hfToken string) {
 	logPrefix := fmt.Sprintf("[downloadFile:%s]", pw.URL)
 	appLogger.Printf("%s Download initiated for URL (File: %s).", logPrefix, pw.ActualFileName)
 	defer func() {
 		appLogger.Printf("%s Goroutine finished (File: %s, Error: '%s').", logPrefix, pw.ActualFileName, pw.ErrorMsg)
 		wg.Done()
-		manager.requestRedraw()
+		// manager.requestRedraw() // Redraw is handled by Write and MarkFinished now
 	}()
 
 	// pw.ActualFileName might contain subdirectories, e.g., "BF16/model.gguf"
@@ -741,7 +779,7 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	}
 
 	client := http.Client{
-		Timeout: 60 * time.Minute,
+		Timeout: 60 * time.Minute, // Consider making this configurable or longer for large files
 	}
 	req, err := http.NewRequest("GET", pw.URL, nil)
 	if err != nil {
@@ -749,6 +787,12 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 		return
 	}
 	req.Header.Set("User-Agent", "Go-File-Downloader/1.1")
+
+	// Add Hugging Face token if provided and it's an HF URL
+	if hfToken != "" && strings.Contains(pw.URL, "huggingface.co") {
+		req.Header.Set("Authorization", "Bearer "+hfToken)
+		appLogger.Printf("%s Using Hugging Face token for download request.", logPrefix)
+	}
 
 	resp, getErr := client.Do(req)
 	if getErr != nil {
@@ -758,7 +802,22 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		pw.MarkFinished(fmt.Sprintf("HTTP %s", resp.Status))
+		// Attempt to read a snippet of the body for error messages from HF (e.g. for gated repos)
+		errorBodySnippet := ""
+		if resp.ContentLength > 0 && resp.ContentLength < 1024 { // Only read small error bodies
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr == nil {
+				errorBodySnippet = strings.TrimSpace(string(bodyBytes))
+				if len(errorBodySnippet) > 100 { // Keep it short
+					errorBodySnippet = errorBodySnippet[:100] + "..."
+				}
+			}
+		}
+		if errorBodySnippet != "" {
+			pw.MarkFinished(fmt.Sprintf("HTTP %s (%s)", resp.Status, errorBodySnippet))
+		} else {
+			pw.MarkFinished(fmt.Sprintf("HTTP %s", resp.Status))
+		}
 		return
 	}
 	appLogger.Printf("%s HTTP GET successful. ContentLength: %d", logPrefix, resp.ContentLength)
@@ -767,11 +826,14 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	if resp.ContentLength > 0 && (pw.Total <= 0 || pw.Total != resp.ContentLength) {
 		appLogger.Printf("%s Updating total size from %d to %d", logPrefix, pw.Total, resp.ContentLength)
 		pw.Total = resp.ContentLength
-	} else if pw.Total <= 0 && resp.ContentLength <= 0 {
-		appLogger.Printf("%s Total size remains unknown from headers.", logPrefix)
+	} else if pw.Total <= 0 && resp.ContentLength <= 0 { // Both API/HEAD and GET failed to provide size
+		appLogger.Printf("%s Total size remains unknown from headers and GET. Download will be indeterminate.", logPrefix)
+		// pw.Total remains -1 or 0
 	}
 	pw.mu.Unlock()
-	manager.requestRedraw()
+	if pw.manager != nil {
+		pw.manager.requestRedraw() // Request redraw after potential size update
+	}
 
 	out, createErr := os.Create(filePath)
 	if createErr != nil {
@@ -789,12 +851,14 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 		pw.mu.Unlock()
 
 		if alreadyDone && (copyErr == io.EOF || strings.Contains(copyErr.Error(), "EOF")) {
+			// If already marked as finished (e.g. by a concurrent issue or manual stop),
+			// and error is EOF, it's likely okay or the original error was more specific.
 			appLogger.Printf("%s Copy interrupted, but already marked done. Error: %v", logPrefix, copyErr)
 		} else {
 			pw.MarkFinished(fmt.Sprintf("Copy: %v", shortenError(copyErr, 25)))
 		}
 	} else {
-		pw.MarkFinished("")
+		pw.MarkFinished("") // Success
 	}
 	appLogger.Printf("%s File copy process completed for '%s'. Final status IsFinished: %t, ErrorMsg: '%s'", logPrefix, filePath, pw.IsFinished, pw.ErrorMsg)
 }
