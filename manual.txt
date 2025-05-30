@@ -1,0 +1,24 @@
+Usage: go.beta [flags] <URL1> <URL2> ...
+Or other commands like 'install', 'update', 'remove'.
+
+Flags for URL/repository downloading:
+  -c int
+    	Number of concurrent downloads & display lines (default 3)
+  -debug
+    	Enable debug logging to log.log
+  -f string
+    	Path to text file containing URLs to download directly
+  -getllama
+    	Interactively download latest llama.cpp binaries from ggerganov/llama.cpp
+  -hf string
+    	Hugging Face repository ID (e.g., owner/repo_name) or full URL
+  -m string
+    	Predefined model alias to download
+  -select
+    	Allow selecting files if downloading from a Hugging Face repository
+  -t	Show system hardware information and exit
+  -update
+    	Check for and apply application self-updates
+
+Examples:
+  go.beta http://example.com/file.zip

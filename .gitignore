@@ -6,3 +6,4 @@ downloads/
 *.gguf
 go.beta/go.beta
 go.stable/go.stable
+go.beta/llama-mac-arm
