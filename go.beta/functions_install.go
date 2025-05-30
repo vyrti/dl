@@ -6,15 +6,19 @@ import (
 	"archive/zip"
 	"bufio"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/mod/semver" // For comparing versions if tags were semantic
 )
@@ -24,7 +28,131 @@ const (
 	llamaCppRepo          = "llama.cpp"
 	installedAppDirPrefix = "./" // Install apps in subdirectories of the current directory
 	versionFileName       = ".release_tag"
+	llamaCppAPIURL        = "https://api.github.com/repos/ggerganov/llama.cpp/releases"
 )
+
+// --- Structs moved from llama.go ---
+
+// GHAsset represents an asset in a GitHub release.
+type GHAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Size               int64  `json:"size"`
+	ContentType        string `json:"content_type"`
+}
+
+// GHRelease represents a GitHub release.
+type GHRelease struct {
+	TagName    string    `json:"tag_name"`
+	Name       string    `json:"name"` // Release title
+	Assets     []GHAsset `json:"assets"`
+	Prerelease bool      `json:"prerelease"`
+}
+
+// LlamaReleaseInfo holds processed information for display and selection.
+// This struct is used as the return type for fetchLatestLlamaCppReleaseInfo.
+type LlamaReleaseInfo struct {
+	TagName     string
+	ReleaseName string
+	Assets      []GHAsset // Filtered assets (e.g., binaries)
+}
+
+// --- Helper function moved from llama.go ---
+
+// formatBytes is a helper to format file sizes.
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// --- Function moved from llama.go ---
+
+func fetchLatestLlamaCppReleaseInfo() (*LlamaReleaseInfo, error) {
+	appLogger.Println("[LlamaInstall] Fetching latest release info from:", llamaCppAPIURL)
+	client := http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("GET", llamaCppAPIURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	// GitHub API recommends setting a User-Agent
+	req.Header.Set("User-Agent", "go-downloader-app/1.0") // Can keep generic or specify installer
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch releases: status %s", resp.Status)
+	}
+
+	var releases []GHRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, fmt.Errorf("failed to decode release list: %w", err)
+	}
+
+	if len(releases) == 0 {
+		return nil, fmt.Errorf("no releases found for %s/%s", llamaCppOwner, llamaCppRepo)
+	}
+
+	var latestRelease GHRelease
+	foundNonPrerelease := false
+	for _, r := range releases {
+		if !r.Prerelease {
+			latestRelease = r
+			foundNonPrerelease = true
+			break
+		}
+	}
+	if !foundNonPrerelease && len(releases) > 0 {
+		latestRelease = releases[0]
+		appLogger.Printf("[LlamaInstall] Using latest release '%s' which is a prerelease, as no stable releases were found higher in the list.", latestRelease.TagName)
+	} else if !foundNonPrerelease {
+		return nil, fmt.Errorf("no suitable release found (logic error)")
+	}
+
+	appLogger.Printf("[LlamaInstall] Found latest release: Tag='%s', Name='%s'", latestRelease.TagName, latestRelease.Name)
+
+	var filteredAssets []GHAsset
+	for _, asset := range latestRelease.Assets {
+		nameLower := strings.ToLower(asset.Name)
+		// Basic filter: if it's a common source archive name, skip.
+		// Otherwise, include .zip, .tar.gz, .exe, .bin, or anything that looks like a binary distribution.
+		// The selectLlamaAsset function will do more detailed filtering.
+		if strings.HasPrefix(nameLower, "source_code.") || nameLower == "source.tar.gz" || nameLower == "source.zip" {
+			if !strings.Contains(nameLower, "bin") && !strings.Contains(nameLower, "cuda") && !strings.Contains(nameLower, "server") { // e.g. llama-server-source.zip
+				appLogger.Printf("[LlamaInstall] Skipping asset '%s' as it appears to be generic source code.", asset.Name)
+				continue
+			}
+		}
+		filteredAssets = append(filteredAssets, asset)
+	}
+
+	if len(filteredAssets) == 0 && len(latestRelease.Assets) > 0 {
+		appLogger.Printf("[LlamaInstall] No assets remained after initial filtering for binaries for tag '%s'. Falling back to showing all assets.", latestRelease.TagName)
+		filteredAssets = latestRelease.Assets
+	}
+
+	sort.Slice(filteredAssets, func(i, j int) bool {
+		return filteredAssets[i].Name < filteredAssets[j].Name
+	})
+
+	return &LlamaReleaseInfo{
+		TagName:     latestRelease.TagName,
+		ReleaseName: latestRelease.Name,
+		Assets:      filteredAssets,
+	}, nil
+}
 
 // getAppPath constructs the path for an installed application.
 func getAppPath(appName string) string {
@@ -360,9 +488,7 @@ func HandleInstallLlamaApp(pm *ProgressManager, appName string) {
 	}
 
 	fmt.Fprintln(os.Stderr, "[INFO] Fetching latest release information for llama.cpp...")
-	// Use the existing fetch function. We might need to adapt it or its usage if filtering is too aggressive.
-	// For now, assume fetchLatestLlamaCppReleaseInfo is in llama.go and returns sufficient assets.
-	releaseInfo, err := fetchLatestLlamaCppReleaseInfo() // This function is in llama.go
+	releaseInfo, err := fetchLatestLlamaCppReleaseInfo()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ERROR] Could not fetch llama.cpp release info: %v\n", err)
 		appLogger.Printf("[Install] Error fetching llama.cpp release info: %v", err)

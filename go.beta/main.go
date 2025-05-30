@@ -221,7 +221,6 @@ func runActual() int {
 	var urlsFilePath, hfRepoInput, modelName string
 	var selectFile bool
 	var showSysInfo bool
-	var getLlama bool
 	var updateAppSelf bool
 
 	// Use a new FlagSet for downloader-specific flags.
@@ -229,7 +228,6 @@ func runActual() int {
 
 	downloaderFlags.BoolVar(&debugMode, "debug", debugMode, "Enable debug logging to log.log")
 	downloaderFlags.BoolVar(&showSysInfo, "t", false, "Show system hardware information and exit")
-	downloaderFlags.BoolVar(&getLlama, "getllama", false, "Interactively download latest llama.cpp binaries from ggerganov/llama.cpp")
 	downloaderFlags.BoolVar(&updateAppSelf, "update", false, "Check for and apply application self-updates (use '--update')")
 	downloaderFlags.IntVar(&concurrency, "c", 3, "Number of concurrent downloads & display lines")
 	downloaderFlags.StringVar(&urlsFilePath, "f", "", "Path to text file containing URLs to download directly")
@@ -265,7 +263,6 @@ func runActual() int {
 		fmt.Fprintf(downloaderFlags.Output(), "  %s -hf TheBloke/Llama-2-7B-GGUF\n", downloaderFlags.Name())
 		fmt.Fprintf(downloaderFlags.Output(), "  %s -hf TheBloke/Llama-2-7B-GGUF -select\n", downloaderFlags.Name())
 		fmt.Fprintf(downloaderFlags.Output(), "  %s -m qwen3-8b\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s -getllama                              (Interactively download official llama.cpp builds)\n", downloaderFlags.Name())
 
 		fmt.Fprintln(downloaderFlags.Output(), "\nExamples for application management:")
 		fmt.Fprintf(downloaderFlags.Output(), "  %s install llama-linux-cuda\n", downloaderFlags.Name())
@@ -310,7 +307,7 @@ func runActual() int {
 
 		if actionFlagsUsed > 0 {
 			appLogger.Println("Error: --update flag (for self-update) cannot be used with other action flags or direct URLs.")
-			fmt.Fprintln(os.Stderr, "Error: --update flag (for self-update) cannot be used with other action flags (-f, -hf, -m, -getllama, -t) or direct URLs.")
+			fmt.Fprintln(os.Stderr, "Error: --update flag (for self-update) cannot be used with other action flags (-f, -hf, -m, -t) or direct URLs.")
 			return 1
 		}
 		HandleUpdate() // This function calls os.Exit() itself and does not use the global manager.
@@ -349,37 +346,29 @@ func runActual() int {
 	if modelName != "" {
 		modesSet++
 	}
-	if getLlama {
-		modesSet++
-	}
 	// Direct URLs are NArg() > 0 AND no other mode flags are set
-	if downloaderFlags.NArg() > 0 && urlsFilePath == "" && hfRepoInput == "" && modelName == "" && !getLlama {
+	if downloaderFlags.NArg() > 0 && urlsFilePath == "" && hfRepoInput == "" && modelName == "" {
 		modesSet++
 	}
 
 	if modesSet == 0 {
-		appLogger.Println("Error: No download mode specified (-f, -hf, -m, -getllama, or direct URLs) and no other command given.")
+		appLogger.Println("Error: No download mode specified (-f, -hf, -m, or direct URLs) and no other command given.")
 		fmt.Fprintln(os.Stderr, "Error: No download mode specified or direct URLs provided.")
 		downloaderFlags.Usage() // Show detailed usage from the flagset
 		return 1
 	}
 	if modesSet > 1 {
-		appLogger.Println("Error: Flags -f, -hf, -m, -getllama, and direct URLs are mutually exclusive.")
-		fmt.Fprintln(os.Stderr, "Error: Flags -f, -hf, -m, -getllama, and direct URLs are mutually exclusive. Please use only one.")
+		appLogger.Println("Error: Flags -f, -hf, -m, and direct URLs are mutually exclusive.")
+		fmt.Fprintln(os.Stderr, "Error: Flags -f, -hf, -m, and direct URLs are mutually exclusive. Please use only one.")
 		downloaderFlags.Usage()
 		return 1
 	}
 
 	// Initialize ProgressManager for downloader modes
 	effectiveConcurrency := concurrency
-	if modelName != "" || getLlama {
+	if modelName != "" {
 		effectiveConcurrency = 1
-		if modelName != "" {
-			appLogger.Printf("Concurrency display overridden to 1 for -m.")
-		}
-		if getLlama {
-			appLogger.Printf("Concurrency display overridden to 1 for -getllama.")
-		}
+		appLogger.Printf("Concurrency display overridden to 1 for -m.")
 	} else if hfRepoInput != "" {
 		maxHfConcurrency := 4
 		if effectiveConcurrency <= 0 || effectiveConcurrency > maxHfConcurrency {
@@ -403,8 +392,8 @@ func runActual() int {
 	manager = NewProgressManager(effectiveConcurrency)
 	defer manager.Stop() // Ensures manager is stopped when runActual returns.
 
-	appLogger.Printf("Effective Display Concurrency: %d. DebugMode: %t, FilePath: '%s', HF Repo Input: '%s', ModelName: '%s', SelectMode: %t, GetLlama: %t, Args: %v",
-		effectiveConcurrency, debugMode, urlsFilePath, hfRepoInput, modelName, selectFile, getLlama, downloaderFlags.Args())
+	appLogger.Printf("Effective Display Concurrency: %d. DebugMode: %t, FilePath: '%s', HF Repo Input: '%s', ModelName: '%s', SelectMode: %t, Args: %v",
+		effectiveConcurrency, debugMode, urlsFilePath, hfRepoInput, modelName, selectFile, downloaderFlags.Args())
 
 	var finalDownloadItems []DownloadItem
 	var downloadDir string
@@ -412,26 +401,7 @@ func runActual() int {
 
 	fmt.Fprintln(os.Stderr, "[INFO] Initializing downloader...")
 
-	if getLlama {
-		appLogger.Println("[Main] -getllama mode selected.")
-		fmt.Fprintln(os.Stderr, "[INFO] Fetching llama.cpp release information...")
-		selectedItem, tagName, errGetLlama := HandleGetLlama()
-		if errGetLlama != nil {
-			appLogger.Printf("Error in HandleGetLlama: %v", errGetLlama)
-			fmt.Fprintf(os.Stderr, "[ERROR] Could not get llama.cpp release information: %v\n", errGetLlama)
-			return 1
-		}
-		if selectedItem.URL == "" {
-			appLogger.Println("[Main] No file selected from llama.cpp releases. Exiting.")
-			fmt.Fprintln(os.Stderr, "[INFO] No file selected for download. Exiting.")
-			return 0
-		}
-		finalDownloadItems = append(finalDownloadItems, selectedItem)
-		safeTagName := strings.ReplaceAll(strings.ReplaceAll(tagName, string(os.PathSeparator), "_"), "..", "")
-		safeTagName = strings.ReplaceAll(safeTagName, ":", "_")
-		downloadDir = filepath.Join("downloads", "llama.cpp_"+safeTagName)
-		appLogger.Printf("[Main] Download directory for llama.cpp set to: %s", downloadDir)
-	} else if modelName != "" {
+	if modelName != "" {
 		modelURL, found := modelRegistry[modelName]
 		if !found {
 			appLogger.Printf("Error: Model alias '%s' not recognized.", modelName)
