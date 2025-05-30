@@ -5,7 +5,7 @@
 set -e
 
 # Define the application version
-APP_VERSION="v0.1.2"
+APP_VERSION="v0.1.3"
 
 # Define the source directory
 SOURCE_DIR="./go.stable"
