@@ -59,29 +59,49 @@ var modelRegistry = map[string]string{
 // Package-level variables for global access (e.g., by signal handlers, main defer)
 var manager *ProgressManager
 
+func printModelUsage() {
+	baseCmd := filepath.Base(os.Args[0])
+	fmt.Fprintf(os.Stderr, "Usage: %s model <subcommand> [options]\n", baseCmd)
+	fmt.Fprintln(os.Stderr, "\nSubcommands:")
+	fmt.Fprintln(os.Stderr, "  search <query>   Search for models on Hugging Face.")
+	fmt.Fprintln(os.Stderr, "\nExample for model command:")
+	fmt.Fprintf(os.Stderr, "  %s model search llama 7b gguf\n", baseCmd)
+}
+
+func printModelSearchUsage() {
+	baseCmd := filepath.Base(os.Args[0])
+	fmt.Fprintf(os.Stderr, "Usage: %s model search <query>\n", baseCmd)
+	fmt.Fprintln(os.Stderr, "\nArguments:")
+	fmt.Fprintln(os.Stderr, "  <query>          The search term for models (e.g., 'bert', 'text generation').")
+	fmt.Fprintln(os.Stderr, "\nExample for model search:")
+	fmt.Fprintf(os.Stderr, "  %s model search llama 7b gguf\n", baseCmd)
+}
+
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s [flags] <URL1> <URL2> ...\n", filepath.Base(os.Args[0]))
+	baseCmd := filepath.Base(os.Args[0])
+	fmt.Fprintf(os.Stderr, "Usage: %s [flags] <URL1> <URL2> ...\n", baseCmd)
 	fmt.Fprintln(os.Stderr, "Or manage pre-configured applications:")
-	fmt.Fprintf(os.Stderr, "  %s install <app_name>\n", filepath.Base(os.Args[0]))
-	fmt.Fprintf(os.Stderr, "  %s update <app_name>\n", filepath.Base(os.Args[0]))
-	fmt.Fprintf(os.Stderr, "  %s remove <app_name>\n", filepath.Base(os.Args[0]))
-	fmt.Fprintln(os.Stderr, "\n  Available <app_name> values:")
+	fmt.Fprintf(os.Stderr, "  %s install <app_name>\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s update <app_name>\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s remove <app_name>\n", baseCmd)
+	fmt.Fprintln(os.Stderr, "Or search for models:")
+	fmt.Fprintf(os.Stderr, "  %s model search <query>\n", baseCmd)
+	fmt.Fprintln(os.Stderr, "\n  Available <app_name> for install/update/remove:")
 	fmt.Fprintln(os.Stderr, "    llama            (Generic CPU build for your OS/Architecture)")
 	fmt.Fprintln(os.Stderr, "    llama-win-cuda   (CUDA-enabled build for Windows x64)")
 	fmt.Fprintln(os.Stderr, "    llama-mac-arm    (Metal-enabled build for macOS ARM64)")
 	fmt.Fprintln(os.Stderr, "    llama-linux-cuda (CUDA-enabled build for Linux, matching your system's CUDA-compatible architecture)")
 	fmt.Fprintln(os.Stderr, "\nFlags for URL/repository downloading (run with -h or --help for details):")
-	// Note: flag.PrintDefaults() here would print global flags, not the specific downloaderFlags.
-	// The detailed flag help is best shown when `downloaderFlags.Usage()` is called.
-	fmt.Fprintln(os.Stderr, "  Use '"+filepath.Base(os.Args[0])+" -h' for a list of downloader flags and more examples.")
+	fmt.Fprintln(os.Stderr, "  Use '"+baseCmd+" -h' for a list of downloader flags and more examples.")
 
 	fmt.Fprintln(os.Stderr, "\nExamples:")
-	fmt.Fprintf(os.Stderr, "  %s http://example.com/file.zip\n", filepath.Base(os.Args[0]))
-	fmt.Fprintf(os.Stderr, "  %s -f urls.txt -c 5\n", filepath.Base(os.Args[0]))
-	fmt.Fprintf(os.Stderr, "  %s -hf TheBloke/Llama-2-7B-GGUF -select\n", filepath.Base(os.Args[0]))
-	fmt.Fprintf(os.Stderr, "  %s install llama-linux-cuda\n", filepath.Base(os.Args[0]))
-	fmt.Fprintf(os.Stderr, "  %s update llama\n", filepath.Base(os.Args[0]))
-	fmt.Fprintf(os.Stderr, "  %s --update (for self-updating the application)\n", filepath.Base(os.Args[0]))
+	fmt.Fprintf(os.Stderr, "  %s http://example.com/file.zip\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s -f urls.txt -c 5\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s -hf TheBloke/Llama-2-7B-GGUF -select\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s install llama-linux-cuda\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s update llama\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s model search text-generation\n", baseCmd)
+	fmt.Fprintf(os.Stderr, "  %s --update (for self-updating the application)\n", baseCmd)
 }
 
 func main() {
@@ -169,23 +189,16 @@ func runActual() int {
 	// Note: `manager` is a package-level variable.
 	// `appLogger`, `logFile`, `debugMode` are also package-level (from downloader.go).
 
-	// Handle install/update/remove commands first
+	// Handle install/update/remove/model commands first
 	if len(os.Args) > 1 {
 		command := os.Args[1]
-		var appName string
+		var appName string    // For install/update/remove
+		var subCommand string // For model
 
-		// Check if the command is one of the direct management commands
-		// to avoid it being misinterpreted as a URL by the flag parser later.
-		isManagementCommand := false
 		switch command {
 		case "install", "update", "remove":
-			isManagementCommand = true
-		}
-
-		if isManagementCommand {
 			if len(os.Args) > 2 {
 				appName = os.Args[2]
-				// Check if appName itself is a flag, which would be an error for these commands
 				if strings.HasPrefix(appName, "-") {
 					fmt.Fprintf(os.Stderr, "Error: Invalid <app_name> '%s' for %s command. App name cannot be a flag.\n", appName, command)
 					printUsage()
@@ -193,13 +206,12 @@ func runActual() int {
 				}
 			} else {
 				fmt.Fprintf(os.Stderr, "Error: Missing <app_name> for %s command.\n", command)
-				printUsage() // Show general usage for command structure errors
+				printUsage()
 				return 1
 			}
 
-			// Initialize manager for commands that need it (install, update)
 			if command == "install" || command == "update" {
-				manager = NewProgressManager(1) // Concurrency of 1 for app management operations display
+				manager = NewProgressManager(1)
 				defer manager.Stop()
 			}
 
@@ -209,9 +221,30 @@ func runActual() int {
 			case "update":
 				HandleUpdateLlamaApp(manager, appName)
 			case "remove":
-				HandleRemoveLlamaApp(appName) // Does not use manager
+				HandleRemoveLlamaApp(appName)
 			}
 			return 0 // Commands handled
+
+		case "model":
+			if len(os.Args) > 2 {
+				subCommand = os.Args[2]
+				if subCommand == "search" {
+					if len(os.Args) > 3 {
+						searchQuery := strings.Join(os.Args[3:], " ")
+						HandleModelSearch(searchQuery) // From functions_search.go
+						return 0                       // Command handled
+					}
+					fmt.Fprintln(os.Stderr, "Error: Missing search query for 'model search' command.")
+					printModelSearchUsage()
+					return 1
+				}
+				fmt.Fprintf(os.Stderr, "Error: Unknown subcommand '%s' for 'model' command.\n", subCommand)
+				printModelUsage()
+				return 1
+			}
+			fmt.Fprintln(os.Stderr, "Error: Missing subcommand for 'model' command (e.g., 'search').")
+			printModelUsage()
+			return 1
 		}
 		// If it was not a recognized management command, proceed to flag parsing.
 	}
@@ -225,6 +258,7 @@ func runActual() int {
 
 	// Use a new FlagSet for downloader-specific flags.
 	downloaderFlags := flag.NewFlagSet(filepath.Base(os.Args[0]), flag.ContinueOnError)
+	baseCmdName := downloaderFlags.Name() // Store for use in usage messages
 
 	downloaderFlags.BoolVar(&debugMode, "debug", debugMode, "Enable debug logging to log.log")
 	downloaderFlags.BoolVar(&showSysInfo, "t", false, "Show system hardware information and exit")
@@ -236,82 +270,68 @@ func runActual() int {
 	downloaderFlags.BoolVar(&selectFile, "select", false, "Allow selecting files if downloading from a Hugging Face repository")
 
 	downloaderFlags.Usage = func() { // Custom usage for this flag set
-		// General usage for downloader flags
-		fmt.Fprintf(downloaderFlags.Output(), "Usage: %s [flags] <URL1> <URL2> ...\n", downloaderFlags.Name())
+		fmt.Fprintf(downloaderFlags.Output(), "Usage: %s [flags] <URL1> <URL2> ...\n", baseCmdName)
 
-		// Information about alternative commands (install, update, remove)
-		fmt.Fprintln(downloaderFlags.Output(), "\nThis tool also supports application management commands:")
-		fmt.Fprintf(downloaderFlags.Output(), "  %s install <app_name>\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s update <app_name>\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s remove <app_name>\n", downloaderFlags.Name())
+		fmt.Fprintln(downloaderFlags.Output(), "\nThis tool also supports application and model management commands:")
+		fmt.Fprintf(downloaderFlags.Output(), "  %s install <app_name>\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s update <app_name>\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s remove <app_name>\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s model search <query>\n", baseCmdName)
+
 		fmt.Fprintln(downloaderFlags.Output(), "\n  Available <app_name> for install/update/remove:")
 		fmt.Fprintln(downloaderFlags.Output(), "    llama            (Generic CPU build for your OS/Architecture)")
 		fmt.Fprintln(downloaderFlags.Output(), "    llama-win-cuda   (CUDA-enabled build for Windows x64)")
 		fmt.Fprintln(downloaderFlags.Output(), "    llama-mac-arm    (Metal-enabled build for macOS ARM64)")
 		fmt.Fprintln(downloaderFlags.Output(), "    llama-linux-cuda (CUDA-enabled build for Linux, matching your system's CUDA-compatible architecture)")
-		fmt.Fprintln(downloaderFlags.Output(), "\nNote: The 'install', 'update', and 'remove' commands are processed before the flags listed below.")
+		fmt.Fprintln(downloaderFlags.Output(), "\nNote: The 'install', 'update', 'remove', and 'model' commands are processed before the flags listed below.")
 
-		// Flags for URL/repository downloading (when not using install/update/remove)
 		fmt.Fprintln(downloaderFlags.Output(), "\nFlags for URL/repository downloading:")
 		downloaderFlags.PrintDefaults()
 
-		// Examples
 		fmt.Fprintln(downloaderFlags.Output(), "\nExamples for URL/repository downloading:")
-		fmt.Fprintf(downloaderFlags.Output(), "  %s http://example.com/file.zip\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s -c 5 http://example.com/file1.zip http://example.com/file2.tar.gz\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s -f urls.txt\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s -hf TheBloke/Llama-2-7B-GGUF\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s -hf TheBloke/Llama-2-7B-GGUF -select\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s -m qwen3-8b\n", downloaderFlags.Name())
+		fmt.Fprintf(downloaderFlags.Output(), "  %s http://example.com/file.zip\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s -c 5 http://example.com/file1.zip http://example.com/file2.tar.gz\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s -f urls.txt\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s -hf TheBloke/Llama-2-7B-GGUF\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s -hf TheBloke/Llama-2-7B-GGUF -select\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s -m qwen3-8b\n", baseCmdName)
 
-		fmt.Fprintln(downloaderFlags.Output(), "\nExamples for application management:")
-		fmt.Fprintf(downloaderFlags.Output(), "  %s install llama-linux-cuda\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s update llama\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s remove llama-mac-arm\n", downloaderFlags.Name())
+		fmt.Fprintln(downloaderFlags.Output(), "\nExamples for application and model management:")
+		fmt.Fprintf(downloaderFlags.Output(), "  %s install llama-linux-cuda\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s update llama\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s remove llama-mac-arm\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s model search \"text to image\"\n", baseCmdName)
 
 		fmt.Fprintln(downloaderFlags.Output(), "\nOther utility commands/flags:")
-		// Note: --update is a flag handled by downloaderFlags, so downloaderFlags.Name() is correct.
-		fmt.Fprintf(downloaderFlags.Output(), "  %s --update                             (Self-update this application)\n", downloaderFlags.Name())
-		fmt.Fprintf(downloaderFlags.Output(), "  %s -t                                   (Show system hardware information)\n", downloaderFlags.Name())
+		fmt.Fprintf(downloaderFlags.Output(), "  %s --update                             (Self-update this application)\n", baseCmdName)
+		fmt.Fprintf(downloaderFlags.Output(), "  %s -t                                   (Show system hardware information)\n", baseCmdName)
 	}
 
-	// Parse flags from os.Args[1:]
-	// This is safe because if os.Args[1] was a management command, we would have returned already.
 	err := downloaderFlags.Parse(os.Args[1:])
 	if err != nil {
 		if err == flag.ErrHelp {
-			// downloaderFlags.Usage() is called automatically by Parse with ErrHelp if output is stderr.
-			return 0 // Exit code 0 for help
+			return 0
 		}
-		// Error message is printed by default with ContinueOnError to os.Stderr.
-		// downloaderFlags.Usage() // Optionally, show full usage on any error
-		return 1 // Exit code 1 for flag parsing errors
+		return 1
 	}
-
-	// After parsing, global `debugMode` might have been updated if -debug was present.
-	// initLogging() was already called, but if debugMode changed, re-init or adjust logger.
-	// For simplicity, current behavior: early init is primary, flag re-confirms.
 
 	if updateAppSelf {
 		actionFlagsUsed := 0
 		downloaderFlags.Visit(func(f *flag.Flag) {
-			// Count flags other than --update itself or -debug
 			if f.Name != "update" && f.Name != "debug" {
 				actionFlagsUsed++
 			}
 		})
-		// Also check non-flag arguments
 		if downloaderFlags.NArg() > 0 {
 			actionFlagsUsed++
 		}
-
 		if actionFlagsUsed > 0 {
 			appLogger.Println("Error: --update flag (for self-update) cannot be used with other action flags or direct URLs.")
 			fmt.Fprintln(os.Stderr, "Error: --update flag (for self-update) cannot be used with other action flags (-f, -hf, -m, -t) or direct URLs.")
 			return 1
 		}
-		HandleUpdate() // This function calls os.Exit() itself and does not use the global manager.
-		return 0       // Should not be reached.
+		HandleUpdate()
+		return 0
 	}
 
 	if showSysInfo {
@@ -321,7 +341,7 @@ func runActual() int {
 				actionFlagsUsed++
 			}
 		})
-		if downloaderFlags.NArg() > 0 { // Check for positional arguments (URLs)
+		if downloaderFlags.NArg() > 0 {
 			actionFlagsUsed++
 		}
 		if actionFlagsUsed > 0 {
@@ -330,7 +350,7 @@ func runActual() int {
 			return 1
 		}
 		appLogger.Println("[Main] System info requested via -t flag. Displaying info and exiting.")
-		ShowSystemInfo() // Does not use manager
+		ShowSystemInfo()
 		return 0
 	}
 
@@ -346,7 +366,6 @@ func runActual() int {
 	if modelName != "" {
 		modesSet++
 	}
-	// Direct URLs are NArg() > 0 AND no other mode flags are set
 	if downloaderFlags.NArg() > 0 && urlsFilePath == "" && hfRepoInput == "" && modelName == "" {
 		modesSet++
 	}
@@ -354,7 +373,7 @@ func runActual() int {
 	if modesSet == 0 {
 		appLogger.Println("Error: No download mode specified (-f, -hf, -m, or direct URLs) and no other command given.")
 		fmt.Fprintln(os.Stderr, "Error: No download mode specified or direct URLs provided.")
-		downloaderFlags.Usage() // Show detailed usage from the flagset
+		downloaderFlags.Usage()
 		return 1
 	}
 	if modesSet > 1 {
@@ -364,7 +383,6 @@ func runActual() int {
 		return 1
 	}
 
-	// Initialize ProgressManager for downloader modes
 	effectiveConcurrency := concurrency
 	if modelName != "" {
 		effectiveConcurrency = 1
@@ -376,28 +394,28 @@ func runActual() int {
 		}
 		appLogger.Printf("Effective concurrency for -hf: %d", effectiveConcurrency)
 	} else {
-		maxFileConcurrency := 100 // Arbitrary high limit for file lists / direct URLs
+		maxFileConcurrency := 100
 		if effectiveConcurrency <= 0 {
-			effectiveConcurrency = 3 // Default if not overridden or invalid
+			effectiveConcurrency = 3
 		}
 		if effectiveConcurrency > maxFileConcurrency {
 			effectiveConcurrency = maxFileConcurrency
 		}
 		appLogger.Printf("Effective concurrency for file list/direct URLs: %d", effectiveConcurrency)
 	}
-	if effectiveConcurrency <= 0 { // Final fallback
+	if effectiveConcurrency <= 0 {
 		effectiveConcurrency = 1
 	}
 
 	manager = NewProgressManager(effectiveConcurrency)
-	defer manager.Stop() // Ensures manager is stopped when runActual returns.
+	defer manager.Stop()
 
 	appLogger.Printf("Effective Display Concurrency: %d. DebugMode: %t, FilePath: '%s', HF Repo Input: '%s', ModelName: '%s', SelectMode: %t, Args: %v",
 		effectiveConcurrency, debugMode, urlsFilePath, hfRepoInput, modelName, selectFile, downloaderFlags.Args())
 
 	var finalDownloadItems []DownloadItem
 	var downloadDir string
-	var hfFileSizes map[string]int64 // Assumed populated by GGUF selection if needed
+	var hfFileSizes map[string]int64
 
 	fmt.Fprintln(os.Stderr, "[INFO] Initializing downloader...")
 
@@ -417,7 +435,7 @@ func runActual() int {
 		if parseErr == nil {
 			preferredFilename = path.Base(parsedURL.Path)
 		} else {
-			preferredFilename = "downloaded_model.file" // Fallback
+			preferredFilename = "downloaded_model.file"
 		}
 		finalDownloadItems = append(finalDownloadItems, DownloadItem{URL: modelURL, PreferredFilename: preferredFilename})
 		safeModelName := strings.ReplaceAll(strings.ReplaceAll(modelName, string(os.PathSeparator), "_"), "..", "")
@@ -437,10 +455,7 @@ func runActual() int {
 
 		selectedHfFiles := allRepoFiles
 		if selectFile {
-			// Placeholder for GGUF selection logic
 			fmt.Fprintln(os.Stderr, "[INFO] -select specified. File selection logic would run here if implemented.")
-			// Potentially modify selectedHfFiles or populate hfFileSizes.
-			// For this example, selection logic is assumed to be part of a more complex flow not shown.
 		}
 
 		for _, hfFile := range selectedHfFiles {
@@ -461,11 +476,11 @@ func runActual() int {
 			downloadDir = filepath.Join("downloads", fmt.Sprintf("hf_%s", safeRepoName))
 			appLogger.Printf("Could not parse owner/repo from hf input '%s', using dir %s", hfRepoInput, downloadDir)
 		}
-	} else { // urlsFilePath or direct URLs from command line
+	} else {
 		if selectFile {
 			fmt.Fprintln(os.Stderr, "[WARN] -select flag is ignored when using -f or direct URLs.")
 		}
-		inputURLs := downloaderFlags.Args() // URLs directly from command line
+		inputURLs := downloaderFlags.Args()
 
 		if urlsFilePath != "" {
 			fmt.Fprintf(os.Stderr, "[INFO] Reading URLs from file: %s\n", urlsFilePath)
@@ -479,7 +494,7 @@ func runActual() int {
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				urlStr := strings.TrimSpace(scanner.Text())
-				if urlStr != "" && !strings.HasPrefix(urlStr, "#") { // Ignore empty lines and comments
+				if urlStr != "" && !strings.HasPrefix(urlStr, "#") {
 					inputURLs = append(inputURLs, urlStr)
 				}
 			}
@@ -494,7 +509,7 @@ func runActual() int {
 			finalDownloadItems = append(finalDownloadItems, DownloadItem{URL: urlStr, PreferredFilename: ""})
 		}
 		appLogger.Printf("Processed %d URLs for download.", len(finalDownloadItems))
-		downloadDir = "downloads" // Default directory for direct URLs or file lists
+		downloadDir = "downloads"
 	}
 
 	if len(finalDownloadItems) == 0 {
@@ -518,7 +533,7 @@ func runActual() int {
 	fmt.Fprintf(os.Stderr, "[INFO] Pre-scanning %d file(s) for sizes (this may take a moment)...\n", len(finalDownloadItems))
 	allPWs := make([]*ProgressWriter, len(finalDownloadItems))
 	var preScanWG sync.WaitGroup
-	preScanSem := make(chan struct{}, 20) // Concurrency for HEAD requests
+	preScanSem := make(chan struct{}, 20)
 
 	for i, item := range finalDownloadItems {
 		preScanWG.Add(1)
@@ -528,19 +543,18 @@ func runActual() int {
 			defer func() { <-preScanSem }()
 
 			actualFile := generateActualFilename(dItem.URL, dItem.PreferredFilename)
-			var initialSize int64 = -1 // Default to unknown size
+			var initialSize int64 = -1
 
-			// Use size from hfFileSizes map if available (e.g., from HF API response)
 			if size, ok := hfFileSizes[dItem.URL]; ok && hfFileSizes != nil {
 				initialSize = size
 				appLogger.Printf("[PreScan] Using size %d for %s from hfFileSizes map", size, dItem.URL)
 			}
 
-			if initialSize == -1 { // If not found or map not used, try HEAD request
+			if initialSize == -1 {
 				client := http.Client{Timeout: 15 * DefaultClientTimeoutMultiplier * time.Second}
 				headResp, headErr := client.Head(dItem.URL)
 				if headErr == nil {
-					defer headResp.Body.Close() // Ensure body is closed
+					defer headResp.Body.Close()
 					if headResp.StatusCode == http.StatusOK {
 						initialSize = headResp.ContentLength
 					} else {
@@ -551,7 +565,7 @@ func runActual() int {
 				}
 			}
 			allPWs[idx] = newProgressWriter(idx, dItem.URL, actualFile, initialSize, manager)
-			manager.requestRedraw() // Request redraw as each PW is initialized with potential size info
+			manager.requestRedraw()
 		}(i, item)
 	}
 	preScanWG.Wait()
@@ -560,14 +574,14 @@ func runActual() int {
 
 	manager.AddInitialDownloads(allPWs)
 	if len(finalDownloadItems) > 0 {
-		manager.performActualDraw(false) // Initial draw with all bars
+		manager.performActualDraw(false)
 	}
 
 	appLogger.Printf("Downloading %d file(s) to '%s' (concurrency: %d).", len(finalDownloadItems), downloadDir, effectiveConcurrency)
 	fmt.Fprintf(os.Stderr, "[INFO] Starting downloads for %d file(s) to '%s' (concurrency: %d).\n", len(finalDownloadItems), downloadDir, effectiveConcurrency)
 
 	var dlWG sync.WaitGroup
-	dlSem := make(chan struct{}, effectiveConcurrency) // Semaphore for download concurrency
+	dlSem := make(chan struct{}, effectiveConcurrency)
 	for _, pw := range allPWs {
 		if pw == nil {
 			appLogger.Printf("Skipping nil ProgressWriter in download loop (should not happen).")
@@ -577,16 +591,14 @@ func runActual() int {
 		dlWG.Add(1)
 		go func(pWriter *ProgressWriter) {
 			defer func() { <-dlSem }()
-			// Pass downloadDir for where files should be saved
 			downloadFile(pWriter, &dlWG, downloadDir, manager)
 		}(pw)
 	}
 	dlWG.Wait()
 	appLogger.Println("All downloads processed.")
-	// manager.Stop() will be called by defer in runActual when this function returns.
 
 	fmt.Fprintf(os.Stderr, "All %d download tasks have been processed.\n", len(finalDownloadItems))
-	return 0 // Success
+	return 0
 }
 
-const DefaultClientTimeoutMultiplier = 1 // Define if not already defined
+const DefaultClientTimeoutMultiplier = 1
