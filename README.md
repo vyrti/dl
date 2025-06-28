@@ -148,7 +148,7 @@ Show system hardware information:
 Update the tool to the latest version:
 
 ```bash
-./dl --update
+./dl -update
 ```
 
 ---
