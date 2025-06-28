@@ -1,8 +1,5 @@
-# 100% AI Generated
-
-This software code was generated 100% using AI tools such as Google Gemini 2.5 Pro and Claude Sonnet 4.
-Please be aware of potential legal risks associated with using AI-generated code, including but not limited to copyright infringement or lack of ownership.
-
+## AI Assistance
+This project was developed with assistance from AI coding tools including Claude Sonnet 4 and Gemini Pro 2.5 
 
 # DL
 
