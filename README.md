@@ -69,7 +69,7 @@ Auto-update is available with -update.
 *   **Multiple Input Sources:** Download from a URL list (`-f`), Hugging Face repo (`-hf`), or direct URLs.
 *   **Model Registry:** Use `-m <alias>` to download popular models by shortcut (see below).
 *   **Model Search:** Search Hugging Face models from the command line.
-*   **Resume** Resume supported
+*   **Resume:** Resume supported
 *   **Llama.cpp App Management:** Install, update, or remove pre-built llama.cpp binaries for your platform.
 *   **Hugging Face GGUF Selection:** Use `-select` to interactively choose `.gguf` files or series from Hugging Face repos.
 *   **Dynamic Progress Bars:** Per-download progress bars with speed, ETA, and more.
