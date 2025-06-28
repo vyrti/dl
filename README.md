@@ -94,7 +94,7 @@ Auto-update is available with -update.
 *   `--token`: Use the `HF_TOKEN` environment variable for Hugging Face API requests and downloads. Necessary for gated or private repositories. The `HF_TOKEN` variable must be set in your environment.
 *   `-select`: (Hugging Face only) Interactively select `.gguf` files or series.
 *   `-debug`: Enable debug logging to `log.log`.
-*   `--update`: Self-update the tool.
+*   `-update`: Self-update the tool.
 *   `-t`: Show system hardware info.
 *   `install <app_name>`: Install a pre-built llama.cpp binary (see below).
 *   `update <app_name>`: Update a llama.cpp binary.
