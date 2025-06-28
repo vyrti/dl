@@ -1,4 +1,3 @@
-// go.beta/functions_search.go
 package main
 
 import (

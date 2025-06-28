@@ -1,4 +1,3 @@
-// go.beta/test.go
 package main
 
 import (

@@ -1,4 +1,3 @@
-// go.beta/downloader.go
 package main
 
 import (
@@ -763,23 +762,64 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	defer func() {
 		appLogger.Printf("%s Goroutine finished (File: %s, Error: '%s').", logPrefix, pw.ActualFileName, pw.ErrorMsg)
 		wg.Done()
-		// manager.requestRedraw() // Redraw is handled by Write and MarkFinished now
 	}()
 
-	// pw.ActualFileName might contain subdirectories, e.g., "BF16/model.gguf"
-	// downloadDir is the base, e.g., "downloads/MyOrg_MyRepo"
 	filePath := filepath.Join(downloadDir, pw.ActualFileName)
 	fileDir := filepath.Dir(filePath)
 
-	// Ensure download directory (including subdirectories for the file) exists
 	err := os.MkdirAll(fileDir, os.ModePerm)
 	if err != nil {
 		pw.MarkFinished(fmt.Sprintf("Dir create '%s': %v", fileDir, shortenError(err, 20)))
 		return
 	}
 
+	var currentSize int64
+	fileInfo, err := os.Stat(filePath)
+	if err == nil {
+		currentSize = fileInfo.Size()
+	} else if !os.IsNotExist(err) {
+		pw.MarkFinished(fmt.Sprintf("Stat file '%s': %v", filePath, shortenError(err, 20)))
+		return
+	}
+
+	pw.mu.Lock()
+	pw.Current = currentSize // Set current progress
+	totalSize := pw.Total
+	pw.mu.Unlock()
+
+	// Check if file is already complete
+	if totalSize > 0 && currentSize >= totalSize {
+		appLogger.Printf("%s File '%s' is already complete (size %d >= total %d).", logPrefix, filePath, currentSize, totalSize)
+		if currentSize > totalSize {
+			appLogger.Printf("%s WARNING: Existing file size (%d) is larger than expected (%d). Truncating.", logPrefix, currentSize, totalSize)
+			if truncErr := os.Truncate(filePath, totalSize); truncErr != nil {
+				pw.MarkFinished(fmt.Sprintf("Truncate failed: %v", truncErr))
+				return
+			}
+			pw.mu.Lock()
+			pw.Current = totalSize
+			pw.mu.Unlock()
+		}
+		pw.MarkFinished("") // Mark as success
+		return
+	}
+
 	client := http.Client{
-		Timeout: 60 * time.Minute, // Consider making this configurable or longer for large files
+		Timeout: 60 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 { // Stop after 10 redirects to prevent loops
+				return http.ErrUseLastResponse
+			}
+			// Forward Authorization and Range headers on redirect, as the default client may not.
+			if originalAuth := via[0].Header.Get("Authorization"); originalAuth != "" {
+				req.Header.Set("Authorization", originalAuth)
+			}
+			if originalRange := via[0].Header.Get("Range"); originalRange != "" {
+				req.Header.Set("Range", originalRange)
+			}
+			appLogger.Printf("%s Following redirect to %s, ensuring headers are preserved.", logPrefix, req.URL)
+			return nil
+		},
 	}
 	req, err := http.NewRequest("GET", pw.URL, nil)
 	if err != nil {
@@ -788,7 +828,11 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	}
 	req.Header.Set("User-Agent", "Go-File-Downloader/1.1")
 
-	// Add Hugging Face token if provided and it's an HF URL
+	if currentSize > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", currentSize))
+		appLogger.Printf("%s Setting Range header for resume: %s", logPrefix, req.Header.Get("Range"))
+	}
+
 	if hfToken != "" && strings.Contains(pw.URL, "huggingface.co") {
 		req.Header.Set("Authorization", "Bearer "+hfToken)
 		appLogger.Printf("%s Using Hugging Face token for download request.", logPrefix)
@@ -801,14 +845,26 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		// Attempt to read a snippet of the body for error messages from HF (e.g. for gated repos)
+	isResume := false
+	if resp.StatusCode == http.StatusPartialContent && currentSize > 0 {
+		isResume = true
+		appLogger.Printf("%s Server supports resume (206 Partial Content). Appending to existing file.", logPrefix)
+	} else if resp.StatusCode == http.StatusOK {
+		appLogger.Printf("%s Server returned 200 OK. Starting download from beginning.", logPrefix)
+		if currentSize > 0 {
+			appLogger.Printf("%s Server does not support resume for this request. Truncating existing file.", logPrefix)
+			currentSize = 0 // Resetting because we're not resuming.
+			pw.mu.Lock()
+			pw.Current = 0 // Also reset progress writer's current count
+			pw.mu.Unlock()
+		}
+	} else {
 		errorBodySnippet := ""
-		if resp.ContentLength > 0 && resp.ContentLength < 1024 { // Only read small error bodies
+		if resp.ContentLength > 0 && resp.ContentLength < 1024 {
 			bodyBytes, readErr := io.ReadAll(resp.Body)
 			if readErr == nil {
 				errorBodySnippet = strings.TrimSpace(string(bodyBytes))
-				if len(errorBodySnippet) > 100 { // Keep it short
+				if len(errorBodySnippet) > 100 {
 					errorBodySnippet = errorBodySnippet[:100] + "..."
 				}
 			}
@@ -820,24 +876,36 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 		}
 		return
 	}
-	appLogger.Printf("%s HTTP GET successful. ContentLength: %d", logPrefix, resp.ContentLength)
 
 	pw.mu.Lock()
-	if resp.ContentLength > 0 && (pw.Total <= 0 || pw.Total != resp.ContentLength) {
-		appLogger.Printf("%s Updating total size from %d to %d", logPrefix, pw.Total, resp.ContentLength)
-		pw.Total = resp.ContentLength
-	} else if pw.Total <= 0 && resp.ContentLength <= 0 { // Both API/HEAD and GET failed to provide size
-		appLogger.Printf("%s Total size remains unknown from headers and GET. Download will be indeterminate.", logPrefix)
-		// pw.Total remains -1 or 0
+	if resp.ContentLength > 0 {
+		var newTotal int64
+		if isResume {
+			newTotal = currentSize + resp.ContentLength
+		} else {
+			newTotal = resp.ContentLength
+		}
+		if pw.Total <= 0 || pw.Total != newTotal {
+			appLogger.Printf("%s Updating total size from %d to %d.", logPrefix, pw.Total, newTotal)
+			pw.Total = newTotal
+		}
+	} else if pw.Total <= 0 {
+		appLogger.Printf("%s Total size remains unknown from headers. Download will be indeterminate.", logPrefix)
 	}
 	pw.mu.Unlock()
 	if pw.manager != nil {
-		pw.manager.requestRedraw() // Request redraw after potential size update
+		pw.manager.requestRedraw()
 	}
 
-	out, createErr := os.Create(filePath)
+	var out *os.File
+	var createErr error
+	if isResume {
+		out, createErr = os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
+	} else {
+		out, createErr = os.Create(filePath)
+	}
 	if createErr != nil {
-		pw.MarkFinished(fmt.Sprintf("Create file '%s': %v", filePath, shortenError(createErr, 20)))
+		pw.MarkFinished(fmt.Sprintf("Open file '%s': %v", filePath, shortenError(createErr, 20)))
 		return
 	}
 	defer out.Close()
@@ -851,9 +919,9 @@ func downloadFile(pw *ProgressWriter, wg *sync.WaitGroup, downloadDir string, ma
 		pw.mu.Unlock()
 
 		if alreadyDone && (copyErr == io.EOF || strings.Contains(copyErr.Error(), "EOF")) {
-			// If already marked as finished (e.g. by a concurrent issue or manual stop),
-			// and error is EOF, it's likely okay or the original error was more specific.
 			appLogger.Printf("%s Copy interrupted, but already marked done. Error: %v", logPrefix, copyErr)
+		} else if strings.Contains(copyErr.Error(), "context canceled") {
+			appLogger.Printf("%s Copy interrupted by context cancellation. Not marking as error.", logPrefix)
 		} else {
 			pw.MarkFinished(fmt.Sprintf("Copy: %v", shortenError(copyErr, 25)))
 		}

@@ -1,11 +1,10 @@
-// build.sh
 #!/bin/bash
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
 # Define the application version
-APP_VERSION="v0.1.4"
+APP_VERSION="v0.1.5"
 
 # Define the source directory
 SOURCE_DIR="./go.stable"

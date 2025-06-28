@@ -1,4 +1,3 @@
-// go.beta/hf.go
 package main
 
 import (

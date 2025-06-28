@@ -1,4 +1,3 @@
-// go.beta/updater.go
 package main
 
 import (
@@ -22,7 +21,7 @@ const (
 	// or for development builds:
 	// go build -ldflags="-X main.CurrentAppVersion=DEVELOPMENT"
 	// This allows checking if an update is actually newer.
-	CurrentAppVersion  = "v0.1.4"      // Default if not set by ldflags
+	CurrentAppVersion  = "v0.1.5"      // Default if not set by ldflags
 	DevelopmentVersion = "DEVELOPMENT" // Special string to indicate a development build
 )
 
@@ -74,7 +73,6 @@ func platformArchToAssetName(goos, goarch string) (string, error) {
 }
 
 func fetchLatestUpdateRelease(owner, repo string) (*GHReleaseUpdater, error) {
-	// ...
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
 	appLogger.Printf("[Updater] Fetching latest release info from: %s", apiURL)
 
@@ -104,7 +102,6 @@ func fetchLatestUpdateRelease(owner, repo string) (*GHReleaseUpdater, error) {
 }
 
 func findMatchingAssetForUpdate(release *GHReleaseUpdater, targetAssetName string) *GHAssetUpdater {
-	// ...
 	for i := range release.Assets {
 		if release.Assets[i].Name == targetAssetName {
 			asset := &release.Assets[i]
@@ -117,22 +114,53 @@ func findMatchingAssetForUpdate(release *GHReleaseUpdater, targetAssetName strin
 }
 
 func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
-	// ...
 	appLogger.Printf("[Updater] Downloading update from %s to %s", url, destPath)
 	fmt.Fprintf(os.Stderr, "[INFO] Downloading update from %s...\n", url)
 
-	out, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("failed to create destination file %s: %w", destPath, err)
+	var currentSize int64
+	fileInfo, err := os.Stat(destPath)
+	if err == nil {
+		currentSize = fileInfo.Size()
+		if assetSize > 0 && currentSize >= assetSize {
+			appLogger.Printf("[Updater] Update file '%s' already exists and is complete.", destPath)
+			fmt.Fprintf(os.Stderr, "[INFO] Update file already downloaded.\n")
+			if currentSize > assetSize {
+				appLogger.Printf("[Updater] WARNING: Existing update file is larger than expected. Truncating.")
+				if err := os.Truncate(destPath, assetSize); err != nil {
+					return fmt.Errorf("could not truncate oversized update file: %w", err)
+				}
+			}
+			return nil
+		}
+		appLogger.Printf("[Updater] Existing partial update file '%s' found with size %d bytes. Attempting to resume.", destPath, currentSize)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("could not stat destination path %s: %w", destPath, err)
 	}
-	defer out.Close()
 
-	client := http.Client{Timeout: 30 * time.Minute}
+	client := http.Client{
+		Timeout: 30 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return http.ErrUseLastResponse
+			}
+			if originalRange := via[0].Header.Get("Range"); originalRange != "" {
+				req.Header.Set("Range", originalRange)
+			}
+			appLogger.Printf("[Updater] Redirected to %s. Forwarding Range header.", req.URL)
+			return nil
+		},
+	}
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request for download: %w", err)
 	}
 	req.Header.Set("User-Agent", "Go-Downloader-Updater/1.0")
+
+	if currentSize > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", currentSize))
+		appLogger.Printf("[Updater] Setting Range header: %s", req.Header.Get("Range"))
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -140,11 +168,35 @@ func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	isResume := false
+	if resp.StatusCode == http.StatusPartialContent && currentSize > 0 {
+		isResume = true
+		appLogger.Printf("[Updater] Server supports resume (206 Partial Content). Appending to existing file.")
+	} else if resp.StatusCode == http.StatusOK {
+		appLogger.Printf("[Updater] Server returned 200 OK. Starting download from beginning.")
+		if currentSize > 0 {
+			appLogger.Printf("[Updater] Server does not support resume. Truncating existing file.")
+			currentSize = 0 // Resetting
+		}
+	} else {
 		return fmt.Errorf("download request failed: status %s", resp.Status)
 	}
 
+	var out *os.File
+	if isResume {
+		out, err = os.OpenFile(destPath, os.O_APPEND|os.O_WRONLY, 0644)
+	} else {
+		out, err = os.Create(destPath)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to open destination file %s: %w", destPath, err)
+	}
+	defer out.Close()
+
 	totalSize := resp.ContentLength
+	if isResume {
+		totalSize += currentSize
+	}
 	if totalSize <= 0 && assetSize > 0 {
 		totalSize = assetSize
 	}
@@ -152,7 +204,7 @@ func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
 		appLogger.Printf("[Updater] Warning: Total size for download is unknown. Progress percentage will not be shown accurately.")
 	}
 
-	var downloaded int64
+	downloaded := currentSize
 	buf := make([]byte, 32*1024)
 	startTime := time.Now()
 
@@ -187,11 +239,10 @@ func downloadFileForUpdate(url string, destPath string, assetSize int64) error {
 	fmt.Fprintln(os.Stderr)
 
 	if err != nil {
-		os.Remove(destPath)
 		return fmt.Errorf("error during download stream: %w", err)
 	}
 
-	appLogger.Printf("[Updater] Downloaded %d bytes in %s", downloaded, time.Since(startTime))
+	appLogger.Printf("[Updater] Downloaded %d bytes in %s", downloaded-currentSize, time.Since(startTime))
 	if totalSize > 0 && downloaded != totalSize {
 		appLogger.Printf("[Updater] Warning: Downloaded size (%d) does not match expected size (%d). File may be incomplete or corrupted.", downloaded, totalSize)
 	}
@@ -286,12 +337,11 @@ func HandleUpdate() {
 	fmt.Fprintf(os.Stderr, "[INFO] Found update: %s (Version: %s, Size: %.2f MB)\n", asset.Name, release.TagName, float64(asset.Size)/(1024*1024))
 
 	tempDownloadPath := currentExecPath + ".new"
-	os.Remove(tempDownloadPath) // Clean up any old temp file
 
 	if err := downloadFileForUpdate(asset.BrowserDownloadURL, tempDownloadPath, asset.Size); err != nil {
 		appLogger.Printf("[Updater] Failed to download update: %v", err)
 		fmt.Fprintf(os.Stderr, "[ERROR] Failed to download update: %v\n", err)
-		os.Remove(tempDownloadPath) // Clean up
+		fmt.Fprintln(os.Stderr, "[INFO] You can re-run the --update command to resume the download.")
 		os.Exit(1)
 	}
 

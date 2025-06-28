@@ -1,4 +1,3 @@
-// go.beta/functions_install.go
 package main
 
 import (
